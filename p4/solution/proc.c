@@ -20,6 +20,11 @@ extern void trapret(void);
 
 static void wakeup1(void *chan);
 
+// global vars
+global_tickets = 0;
+global_stride = 0;
+global_pass = 0;
+
 void
 pinit(void)
 {
@@ -218,6 +223,13 @@ fork(void)
 
   release(&ptable.lock);
 
+  // initialize new scheduler values
+  np->pass = global_pass;
+  np->tickets = 8;
+  np->stride = STRIDE1 / np->tickets;
+  np->ticks_run = 0;
+  np->remain = 0;
+
   return pid;
 }
 
@@ -335,6 +347,8 @@ scheduler(void)
     for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
       if(p->state != RUNNABLE)
         continue;
+
+      p->pass += p->stride;
 
       // Switch to chosen process.  It is the process's job
       // to release ptable.lock and then reacquire it

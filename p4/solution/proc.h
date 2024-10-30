@@ -13,6 +13,8 @@ struct cpu {
 extern struct cpu cpus[NCPU];
 extern int ncpu;
 
+#define STRIDE1 (1 << 10)
+
 //PAGEBREAK: 17
 // Saved registers for kernel context switches.
 // Don't need to save all the segment registers (%cs, etc),
@@ -49,6 +51,12 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
+  int pass;                    // Chooses when the process runs
+  int tickets;                 // Priority of a process
+  int stride;                  // How often a process runs
+  int remain;                  // number of passes left before a processes' next selection;
+                               // difference between process's pass and global pass
+  int ticks_run;               // number of ticks a proc has been running for
 };
 
 // Process memory is laid out contiguously, low addresses first:
