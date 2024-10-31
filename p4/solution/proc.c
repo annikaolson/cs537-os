@@ -358,6 +358,10 @@ scheduler(void)
       if(p->state != RUNNABLE)
         continue;
 
+      // pick the process with the lowest pass value among all processes
+      // waiting to be scheduled; for tie breaking, use the total runtime
+      
+
       p->pass += p->stride; // update pass
       global_pass += global_stride;
       p->ticks_run += 1;
