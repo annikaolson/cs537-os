@@ -275,6 +275,14 @@ exit(void)
     }
   }
 
+  // update global tickets and stride when a process exits;
+  // this process no longer exists, so it should not contribute
+  // to global tickets
+  global_tickets -= curproc->tickets;
+  if (global_tickets > 0) {
+    global_stride = STRIDE1 / global_tickets;
+  }
+
   // Jump into the scheduler, never to return.
   curproc->state = ZOMBIE;
   sched();
@@ -453,6 +461,14 @@ sleep(void *chan, struct spinlock *lk)
     acquire(&ptable.lock);  //DOC: sleeplock1
     release(lk);
   }
+
+  // update global tickets and stride when process changes
+  // states to sleep
+  global_tickets -= p->tickets;
+  if (global_tickets > 0) {
+    global_stride = STRIDE1 / global_tickets;
+  }
+
   // Go to sleep.
   p->chan = chan;
   p->state = SLEEPING;
@@ -480,6 +496,10 @@ wakeup1(void *chan)
   for(p = ptable.proc; p < &ptable.proc[NPROC]; p++)
     if(p->state == SLEEPING && p->chan == chan)
       p->state = RUNNABLE;
+
+      // update global tickets and stride
+      global_tickets += p->tickets;
+      global_stride = STRIDE1 / global_tickets;
 }
 
 // Wake up all processes sleeping on chan.
