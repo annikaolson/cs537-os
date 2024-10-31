@@ -462,12 +462,16 @@ sleep(void *chan, struct spinlock *lk)
     release(lk);
   }
 
-  // update global tickets and stride when process changes
-  // states to sleep
+  // update global tickets and stride (global tickets is only runnable
+  // proc's tickets)
   global_tickets -= p->tickets;
   if (global_tickets > 0) {
     global_stride = STRIDE1 / global_tickets;
   }
+
+  // When a process leaves the scheduler queue, remain is computed as the
+  // difference between the process' pass and the global_pass
+  p->remain = p->pass - global_pass;
 
   // Go to sleep.
   p->chan = chan;
@@ -497,7 +501,12 @@ wakeup1(void *chan)
     if(p->state == SLEEPING && p->chan == chan)
       p->state = RUNNABLE;
 
-      // update global tickets and stride
+      // When a process rejoins the system, its pass value is recomputed by
+      // adding its remain value to the global_pass
+      p->pass = p->remain + global_pass;
+
+      // update global tickets and stride (global tickets is only runnable
+      // proc's tickets)
       global_tickets += p->tickets;
       global_stride = STRIDE1 / global_tickets;
 }
