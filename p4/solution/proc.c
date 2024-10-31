@@ -350,7 +350,9 @@ scheduler(void)
       if(p->state != RUNNABLE)
         continue;
 
-      p->pass += p->stride;
+      p->pass += p->stride; // update pass
+      global_pass += global_stride;
+      p->ticks_run += 1;
 
       // Switch to chosen process.  It is the process's job
       // to release ptable.lock and then reacquire it
