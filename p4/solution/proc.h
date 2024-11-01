@@ -56,7 +56,7 @@ struct proc {
   int stride;                  // How often a process runs
   int remain;                  // number of passes left before a processes' next selection;
                                // difference between process's pass and global pass
-  int ticks_run;               // number of ticks a proc has been running for
+  int runtime;               // number of ticks a proc has been running for
 };
 
 // Process memory is laid out contiguously, low addresses first:

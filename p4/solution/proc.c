@@ -121,7 +121,7 @@ found:
   p->pass = global_pass;
   p->tickets = 8;
   p->stride = STRIDE1 / p->tickets;
-  p->ticks_run = 0;
+  p->runtime = 0;
   p->remain = 0;
   global_tickets += p->tickets;
   global_stride = STRIDE1 / global_tickets;
@@ -345,12 +345,15 @@ void
 scheduler(void)
 {
   struct proc *p;
+  struct proc *picked_p;
   struct cpu *c = mycpu();
   c->proc = 0;
   
   for(;;){
     // Enable interrupts on this processor.
     sti();
+
+    picked_p = ptable.proc; // assume picked process is first in proc table
 
     // Loop over process table looking for process to run.
     acquire(&ptable.lock);
@@ -359,12 +362,23 @@ scheduler(void)
         continue;
 
       // pick the process with the lowest pass value among all processes
-      // waiting to be scheduled; for tie breaking, use the total runtime
-      
+      // waiting to be scheduled
+      if (p->pass < picked_p->pass) {
+        picked_p = p;
+      } // tie-breaker: use total runtime (skip over first iteration)
+      else if ((p->pass == picked_p->pass) && (p != picked_p)) {
+        if (p->runtime < picked_p->runtime) {
+          picked_p = p;
+        } else if (p->pid < picked_p->pid) {
+          picked_p = p;
+        }
+      }
 
+
+      // do all of below on picked process only
       p->pass += p->stride; // update pass
       global_pass += global_stride;
-      p->ticks_run += 1;
+      p->runtime += 1;
 
       // Switch to chosen process.  It is the process's job
       // to release ptable.lock and then reacquire it
