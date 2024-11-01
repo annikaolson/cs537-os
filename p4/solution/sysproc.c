@@ -7,6 +7,9 @@
 #include "mmu.h"
 #include "proc.h"
 
+#define MAX_TICKETS 1<<5
+#define MIN_TICKETS 1
+
 int
 sys_fork(void)
 {
@@ -88,4 +91,28 @@ sys_uptime(void)
   xticks = ticks;
   release(&tickslock);
   return xticks;
+}
+
+// allow a process to set its own number of ticketes
+int
+sys_settickets(void) {
+  // retrive arg n
+  int n;
+  if (argint(0, &n) < 0) {
+    return -1;
+  }
+
+  // if the process tries to set a value lower than the
+  // minimum amount of tickets, the number of tickets is
+  // set to the default of 8
+  if (n < MIN_TICKETS) {
+    myproc()->tickets = 8;
+  } else if (n > MAX_TICKETS) {
+    myproc()->tickets = MAX_TICKETS;
+  } else {
+    myproc()->tickets = n;
+  }
+
+  return 0;
+
 }
