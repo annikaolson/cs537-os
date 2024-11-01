@@ -544,6 +544,13 @@ kill(int pid)
 {
   struct proc *p;
 
+  // update global tickets and stride (global tickets is only runnable
+  // proc's tickets)
+  global_tickets -= p->tickets;
+  if (global_tickets > 0) {
+    global_stride = STRIDE1 / global_tickets;
+  }
+
   acquire(&ptable.lock);
   for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
     if(p->pid == pid){
