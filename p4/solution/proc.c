@@ -373,27 +373,25 @@ scheduler(void)
           picked_p = p;
         }
       }
-
-
-      // do all of below on picked process only
-      p->pass += p->stride; // update pass
-      global_pass += global_stride;
-      p->runtime += 1;
-
-      // Switch to chosen process.  It is the process's job
-      // to release ptable.lock and then reacquire it
-      // before jumping back to us.
-      c->proc = p;
-      switchuvm(p);
-      p->state = RUNNING;
-
-      swtch(&(c->scheduler), p->context);
-      switchkvm();
-
-      // Process is done running for now.
-      // It should have changed its p->state before coming back.
-      c->proc = 0;
     }
+    // do all of below on picked process only
+    picked_p->pass += picked_p->stride; // update pass
+    global_pass += global_stride;
+    picked_p->runtime += 1;
+
+    // Switch to chosen process.  It is the process's job
+    // to release ptable.lock and then reacquire it
+    // before jumping back to us.
+    c->proc = picked_p;
+    switchuvm(picked_p);
+    picked_p->state = RUNNING;
+
+    swtch(&(c->scheduler), picked_p->context);
+    switchkvm();
+
+    // Process is done running for now.
+    // It should have changed its p->state before coming back.
+    c->proc = 0;
     release(&ptable.lock);
 
   }
