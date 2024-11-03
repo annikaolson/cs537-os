@@ -182,6 +182,9 @@ UPROGS=\
 	_kill\
 	_ln\
 	_ls\
+	_test_1\
+	_test_2\
+	_test_3\
 	_mkdir\
 	_rm\
 	_sh\

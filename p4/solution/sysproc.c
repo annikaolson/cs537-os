@@ -106,13 +106,30 @@ sys_settickets(void) {
   // minimum amount of tickets, the number of tickets is
   // set to the default of 8
   if (n < MIN_TICKETS) {
-    myproc()->tickets = 8;
+    n = 8;
   } else if (n > MAX_TICKETS) {
-    myproc()->tickets = MAX_TICKETS;
-  } else {
-    myproc()->tickets = n;
+    n = MAX_TICKETS;
   }
 
-  return 0;
+  // Call update tickets helper function
+  struct proc *p = myproc();
+  update_tickets(p, n);
 
+  return 0;
+}
+
+// Retrieve scheduling information for all processes
+int
+sys_getpinfo(void) {
+  // retrieve pstat ptr
+  struct pstat *pstat;
+  if(argptr(0, (void*)&pstat, sizeof(*pstat)) < 0) {
+    return -1;
+  }
+
+  // Fill pstat with information on all processes
+  // from the process table
+  fill_pstat(pstat);
+
+  return 0;
 }

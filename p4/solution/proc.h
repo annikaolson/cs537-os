@@ -64,3 +64,10 @@ struct proc {
 //   original data and bss
 //   fixed-size stack
 //   expandable heap
+
+// Helper function to fill pstat with information on all 
+// processes from the process table
+#include "pstat.h"
+void fill_pstat(struct pstat *pstat);
+void update_globals();
+void update_tickets(struct proc *p, int new_tickets);

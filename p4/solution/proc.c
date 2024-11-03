@@ -21,9 +21,9 @@ extern void trapret(void);
 static void wakeup1(void *chan);
 
 // global vars
-global_tickets = 0;
-global_stride = 0;
-global_pass = 0;
+int global_tickets = 0;
+int global_stride = 0;
+int global_pass = 0;
 
 void
 pinit(void)
@@ -123,8 +123,6 @@ found:
   p->stride = STRIDE1 / p->tickets;
   p->runtime = 0;
   p->remain = 0;
-  global_tickets += p->tickets;
-  global_stride = STRIDE1 / global_tickets;
 
   return p;
 }
@@ -275,14 +273,6 @@ exit(void)
     }
   }
 
-  // update global tickets and stride when a process exits;
-  // this process no longer exists, so it should not contribute
-  // to global tickets
-  global_tickets -= curproc->tickets;
-  if (global_tickets > 0) {
-    global_stride = STRIDE1 / global_tickets;
-  }
-
   // Jump into the scheduler, never to return.
   curproc->state = ZOMBIE;
   sched();
@@ -353,47 +343,62 @@ scheduler(void)
     // Enable interrupts on this processor.
     sti();
 
-    picked_p = ptable.proc; // assume picked process is first in proc table
+    // Update globals at each tick
+    update_globals();
 
     // Loop over process table looking for process to run.
     acquire(&ptable.lock);
+    picked_p = 0;
     for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
-      if(p->state != RUNNABLE)
+      if(p->state != RUNNABLE) {
         continue;
+      }
+
+      // Initialize picked_p if not yet set
+      if (picked_p == 0) {
+        picked_p = p;
+        continue; // Skip the rest for the first found RUNNABLE process
+      }
 
       // pick the process with the lowest pass value among all processes
       // waiting to be scheduled
       if (p->pass < picked_p->pass) {
         picked_p = p;
-      } // tie-breaker: use total runtime (skip over first iteration)
+      } 
+      // tie-breakers (skips over first iteration)
       else if ((p->pass == picked_p->pass) && (p != picked_p)) {
+        // tie-breaker: use the process with a smaller total runtime
         if (p->runtime < picked_p->runtime) {
           picked_p = p;
-        } else if (p->pid < picked_p->pid) {
+        } 
+        // tie-breaker: use the process with a smaller pid
+        else if (p->pid < picked_p->pid) {
           picked_p = p;
         }
       }
     }
+
     // do all of below on picked process only
-    picked_p->pass += picked_p->stride; // update pass
-    global_pass += global_stride;
-    picked_p->runtime += 1;
+    if (picked_p != 0) {
+      picked_p->pass += picked_p->stride; // update pass
+      picked_p->runtime += 1;
 
-    // Switch to chosen process.  It is the process's job
-    // to release ptable.lock and then reacquire it
-    // before jumping back to us.
-    c->proc = picked_p;
-    switchuvm(picked_p);
-    picked_p->state = RUNNING;
+      // Switch to chosen process.  It is the process's job
+      // to release ptable.lock and then reacquire it
+      // before jumping back to us.
+      c->proc = picked_p;
+      switchuvm(picked_p);
+      picked_p->state = RUNNING;
 
-    swtch(&(c->scheduler), picked_p->context);
-    switchkvm();
+      swtch(&(c->scheduler), picked_p->context);
+      switchkvm();
 
-    // Process is done running for now.
-    // It should have changed its p->state before coming back.
-    c->proc = 0;
+      // Process is done running for now.
+      // It should have changed its p->state before coming back.
+      c->proc = 0;
+    }
+
     release(&ptable.lock);
-
   }
 }
 
@@ -478,13 +483,6 @@ sleep(void *chan, struct spinlock *lk)
     release(lk);
   }
 
-  // update global tickets and stride (global tickets is only runnable
-  // proc's tickets)
-  global_tickets -= p->tickets;
-  if (global_tickets > 0) {
-    global_stride = STRIDE1 / global_tickets;
-  }
-
   // When a process leaves the scheduler queue, remain is computed as the
   // difference between the process' pass and the global_pass
   p->remain = p->pass - global_pass;
@@ -513,18 +511,15 @@ wakeup1(void *chan)
 {
   struct proc *p;
 
-  for(p = ptable.proc; p < &ptable.proc[NPROC]; p++)
-    if(p->state == SLEEPING && p->chan == chan)
+  for(p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
+    if(p->state == SLEEPING && p->chan == chan) {
       p->state = RUNNABLE;
 
       // When a process rejoins the system, its pass value is recomputed by
       // adding its remain value to the global_pass
       p->pass = p->remain + global_pass;
-
-      // update global tickets and stride (global tickets is only runnable
-      // proc's tickets)
-      global_tickets += p->tickets;
-      global_stride = STRIDE1 / global_tickets;
+    }
+  }
 }
 
 // Wake up all processes sleeping on chan.
@@ -543,13 +538,7 @@ int
 kill(int pid)
 {
   struct proc *p;
-
-  // update global tickets and stride (global tickets is only runnable
-  // proc's tickets)
-  global_tickets -= p->tickets;
-  if (global_tickets > 0) {
-    global_stride = STRIDE1 / global_tickets;
-  }
+  p = ptable.proc;
 
   acquire(&ptable.lock);
   for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
@@ -601,4 +590,63 @@ procdump(void)
     }
     cprintf("\n");
   }
+}
+
+// Helper function to fill pstat with information on all 
+// processes from the process table
+void fill_pstat(struct pstat *pstat) {
+    for(int i = 0; i < NPROC; i++) {
+        pstat->inuse[i] = (ptable.proc[i].state != UNUSED);
+        pstat->tickets[i] = ptable.proc[i].tickets;
+        pstat->pid[i] = ptable.proc[i].pid;
+        pstat->pass[i] = ptable.proc[i].pass;
+        pstat->remain[i] = ptable.proc[i].remain;
+        pstat->stride[i] = ptable.proc[i].stride;
+        pstat->rtime[i] = ptable.proc[i].runtime;
+    }
+}
+
+// Helper function for updating globals
+//
+// Called when:
+// - A process is scheduled (in scheduler)
+// - A process is created (in fork)
+// - A process exits (in exit)
+// - A process changes its tickets (in update_ticket)
+void update_globals() {
+  struct proc *p;
+  global_tickets = 0;
+  
+  // Sum tickets based on what is in ptable
+  for (p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
+      if (p->state == RUNNABLE) {
+          global_tickets += p->tickets;
+      }
+  }
+  
+  // Update global stride and pass
+  if (global_tickets > 0) {
+      global_stride = STRIDE1 / global_tickets;
+  } else {
+      global_stride = 0;
+  }
+  
+  // Increment global pass for the tick
+  global_pass += global_stride; 
+}
+
+// Helper function for updating ticket values
+void update_tickets(struct proc *p, int new_tickets) {
+  // Update tickets and calculate new stride
+  int old_tickets = p->tickets;
+  p->tickets = new_tickets;
+  p->stride = STRIDE1 / new_tickets;
+
+  // Update remain based on new stride
+  if (new_tickets != old_tickets) {
+      p->remain = (p->remain * (p->stride / (STRIDE1 / old_tickets)));
+  }
+
+  // Update pass with new remain
+  p->pass = global_pass + p->remain;
 }
