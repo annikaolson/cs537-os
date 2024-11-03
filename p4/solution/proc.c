@@ -514,10 +514,6 @@ wakeup1(void *chan)
   for(p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
     if(p->state == SLEEPING && p->chan == chan) {
       p->state = RUNNABLE;
-
-      // When a process rejoins the system, its pass value is recomputed by
-      // adding its remain value to the global_pass
-      p->pass = p->remain + global_pass;
     }
   }
 }
