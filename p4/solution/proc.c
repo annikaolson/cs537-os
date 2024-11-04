@@ -162,6 +162,15 @@ userinit(void)
 
   p->state = RUNNABLE;
 
+  // Update global pass first
+  update_global_pass();
+
+  // Process rejoins the system
+  p->pass = p->remain + global_pass;
+
+  // Update global tickets last
+  update_global_tickets(p->tickets);
+
   release(&ptable.lock);
 }
 
@@ -227,6 +236,15 @@ fork(void)
   acquire(&ptable.lock);
 
   np->state = RUNNABLE;
+
+  // Update global pass first
+  update_global_pass();
+
+  // Process rejoins the system
+  np->pass = np->remain + global_pass;
+
+  // Update global tickets last
+  update_global_tickets(np->tickets);
 
   release(&ptable.lock);
 
@@ -343,9 +361,6 @@ scheduler(void)
     // Enable interrupts on this processor.
     sti();
 
-    // Update globals at each tick
-    update_globals();
-
     // Loop over process table looking for process to run.
     acquire(&ptable.lock);
     picked_p = 0;
@@ -380,8 +395,7 @@ scheduler(void)
 
     // do all of below on picked process only
     if (picked_p != 0) {
-      picked_p->pass += picked_p->stride; // update pass
-      picked_p->runtime += 1;
+      picked_p->pass += picked_p->stride; // update individual pass
 
       // Switch to chosen process.  It is the process's job
       // to release ptable.lock and then reacquire it
@@ -483,9 +497,15 @@ sleep(void *chan, struct spinlock *lk)
     release(lk);
   }
 
+  // Update global pass first
+  update_global_pass();
+
   // When a process leaves the scheduler queue, remain is computed as the
   // difference between the process' pass and the global_pass
   p->remain = p->pass - global_pass;
+
+  // Update global tickets last
+  update_global_tickets(-(p->tickets));
 
   // Go to sleep.
   p->chan = chan;
@@ -514,6 +534,15 @@ wakeup1(void *chan)
   for(p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
     if(p->state == SLEEPING && p->chan == chan) {
       p->state = RUNNABLE;
+      
+      // Update global pass first
+      update_global_pass();
+
+      // Process rejoins the system
+      p->pass = p->remain + global_pass;
+
+      // Update global tickets last
+      update_global_tickets(p->tickets);
     }
   }
 }
@@ -547,6 +576,17 @@ kill(int pid)
       return 0;
     }
   }
+
+  // Update global pass first
+  update_global_pass();
+
+  // When a process leaves the scheduler queue, remain is computed as the
+  // difference between the process' pass and the global_pass
+  p->remain = p->pass - global_pass;
+
+  // Update global tickets last
+  update_global_tickets(-(p->tickets));
+  
   release(&ptable.lock);
   return -1;
 }
@@ -609,16 +649,9 @@ void fill_pstat(struct pstat *pstat) {
 // - A process is created (in fork)
 // - A process exits (in exit)
 // - A process changes its tickets (in update_ticket)
-void update_globals() {
-  struct proc *p;
-  global_tickets = 0;
-  
-  // Sum tickets based on what is in ptable
-  for (p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
-      if (p->state == RUNNABLE) {
-          global_tickets += p->tickets;
-      }
-  }
+void update_global_tickets(int delta_tickets) {
+  // Update global tickets
+  global_tickets += delta_tickets;
   
   // Update global stride and pass
   if (global_tickets > 0) {
@@ -626,22 +659,27 @@ void update_globals() {
   } else {
       global_stride = 0;
   }
-  
-  // Increment global pass for the tick
-  global_pass += global_stride; 
+}
+
+// Helper function for updating global pass
+void update_global_pass() {
+  // Update global pass
+  global_pass += global_stride;
 }
 
 // Helper function for updating ticket values
 void update_tickets(struct proc *p, int new_tickets) {
   // Update tickets and calculate new stride
-  int old_tickets = p->tickets;
+  int old_stride = p->stride;
+
+  // Update tickets based on new tickets
   p->tickets = new_tickets;
+
+  // Update stride based on new tickets
   p->stride = STRIDE1 / new_tickets;
 
   // Update remain based on new stride
-  if (new_tickets != old_tickets) {
-      p->remain = (p->remain * (p->stride / (STRIDE1 / old_tickets)));
-  }
+  p->remain = (p->remain * (p->stride / old_stride));
 
   // Update pass with new remain
   p->pass = global_pass + p->remain;

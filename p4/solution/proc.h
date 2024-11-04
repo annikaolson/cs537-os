@@ -69,5 +69,6 @@ struct proc {
 // processes from the process table
 #include "pstat.h"
 void fill_pstat(struct pstat *pstat);
-void update_globals();
+void update_global_tickets(int delta_tickets);
+void update_global_pass();
 void update_tickets(struct proc *p, int new_tickets);

@@ -51,6 +51,16 @@ trap(struct trapframe *tf)
     if(cpuid() == 0){
       acquire(&tickslock);
       ticks++;
+
+      // Update the runtime for the current process if it's running
+      struct proc *p = myproc();
+      if (p && p->state == RUNNING) {
+        p->runtime++;
+      }
+
+      // Update global pass every tick
+      update_global_pass();
+
       wakeup(&ticks);
       release(&tickslock);
     }
