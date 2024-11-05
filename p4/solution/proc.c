@@ -94,6 +94,13 @@ found:
   p->state = EMBRYO;
   p->pid = nextpid++;
 
+  // initialize new scheduler values
+  p->pass = global_pass;
+  p->tickets = 8;
+  p->stride = STRIDE1 / p->tickets;
+  p->runtime = 0;
+  p->remain = 0;
+
   release(&ptable.lock);
 
   // Allocate kernel stack.
@@ -116,13 +123,6 @@ found:
   p->context = (struct context*)sp;
   memset(p->context, 0, sizeof *p->context);
   p->context->eip = (uint)forkret;
-
-  // initialize new scheduler values
-  p->pass = global_pass;
-  p->tickets = 8;
-  p->stride = STRIDE1 / p->tickets;
-  p->runtime = 0;
-  p->remain = 0;
 
   return p;
 }
@@ -161,9 +161,6 @@ userinit(void)
   acquire(&ptable.lock);
 
   p->state = RUNNABLE;
-
-  // Process rejoins the system
-  p->pass = p->remain + global_pass;
 
   // Update global tickets last
   update_global_tickets(p->tickets);
@@ -233,9 +230,6 @@ fork(void)
   acquire(&ptable.lock);
 
   np->state = RUNNABLE;
-
-  // Process rejoins the system
-  np->pass = np->remain + global_pass;
 
   // Update global tickets last
   update_global_tickets(np->tickets);
@@ -431,14 +425,17 @@ scheduler(void)
       // Switch to chosen process.  It is the process's job
       // to release ptable.lock and then reacquire it
       // before jumping back to us.
+
       c->proc = picked_p;
       switchuvm(picked_p);
       picked_p->state = RUNNING;
 
       swtch(&(c->scheduler), picked_p->context);
-      switchkvm();
 
-      picked_p->pass += picked_p->stride; // update individual pass
+      // Update pass for the selected process after it runs
+      picked_p->pass += picked_p->stride;
+
+      switchkvm();
 
       // Process is done running for now.
       // It should have changed its p->state before coming back.
@@ -473,6 +470,7 @@ sched(void)
     panic("sched running");
   if(readeflags()&FL_IF)
     panic("sched interruptible");
+
   intena = mycpu()->intena;
   swtch(&p->context, mycpu()->scheduler);
   mycpu()->intena = intena;
@@ -484,6 +482,7 @@ yield(void)
 {
   acquire(&ptable.lock);  //DOC: yieldlock
   myproc()->state = RUNNABLE;
+  
   sched();
   release(&ptable.lock);
 }
@@ -718,8 +717,10 @@ void update_tickets(struct proc *p, int new_tickets) {
   // Update pass with new remain
   p->pass = global_pass + p->remain;
 
-  // if process is running, update global tickets
-  update_global_tickets(new_tickets-(old_tickets));
+  // if process is running or runnable, update global tickets
+  if (p->state == RUNNING || p->state == RUNNABLE) {
+    update_global_tickets(new_tickets-(old_tickets));
+  }
   
   release(&ptable.lock);
 }
