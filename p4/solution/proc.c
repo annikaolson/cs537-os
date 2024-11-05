@@ -162,9 +162,6 @@ userinit(void)
 
   p->state = RUNNABLE;
 
-  // Update global pass first
-  update_global_pass();
-
   // Process rejoins the system
   p->pass = p->remain + global_pass;
 
@@ -237,9 +234,6 @@ fork(void)
 
   np->state = RUNNABLE;
 
-  // Update global pass first
-  update_global_pass();
-
   // Process rejoins the system
   np->pass = np->remain + global_pass;
 
@@ -279,6 +273,9 @@ exit(void)
 
   acquire(&ptable.lock);
 
+  // Decrement global tickets for the current process
+  update_global_tickets(-curproc->tickets);
+
   // Parent might be sleeping in wait().
   wakeup1(curproc->parent);
 
@@ -290,6 +287,7 @@ exit(void)
         wakeup1(initproc);
     }
   }
+
 
   // Jump into the scheduler, never to return.
   curproc->state = ZOMBIE;
@@ -395,6 +393,7 @@ scheduler(void)
 
     // Loop over process table looking for process to run.
     acquire(&ptable.lock);
+    
     picked_p = 0;
     for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
       if(p->state != RUNNABLE) {
@@ -413,22 +412,22 @@ scheduler(void)
         picked_p = p;
       } 
       // tie-breakers (skips over first iteration)
-      else if ((p->pass == picked_p->pass) && (p != picked_p)) {
+      else if (p->pass == picked_p->pass) {
         // tie-breaker: use the process with a smaller total runtime
         if (p->runtime < picked_p->runtime) {
           picked_p = p;
         } 
         // tie-breaker: use the process with a smaller pid
-        else if (p->pid < picked_p->pid) {
-          picked_p = p;
+        else if (p->runtime == picked_p->runtime) {
+          if (p->pid < picked_p->pid) {
+            picked_p = p;
+          }
         }
       }
     }
 
     // do all of below on picked process only
     if (picked_p != 0) {
-      picked_p->pass += picked_p->stride; // update individual pass
-
       // Switch to chosen process.  It is the process's job
       // to release ptable.lock and then reacquire it
       // before jumping back to us.
@@ -438,6 +437,8 @@ scheduler(void)
 
       swtch(&(c->scheduler), picked_p->context);
       switchkvm();
+
+      picked_p->pass += picked_p->stride; // update individual pass
 
       // Process is done running for now.
       // It should have changed its p->state before coming back.
@@ -532,19 +533,16 @@ sleep(void *chan, struct spinlock *lk)
     release(lk);
   }
 
-  // Update global pass first
-  update_global_pass();
+  // Go to sleep.
+  p->chan = chan;
+  p->state = SLEEPING;
 
   // When a process leaves the scheduler queue, remain is computed as the
   // difference between the process' pass and the global_pass
   p->remain = p->pass - global_pass;
 
-  // Update global tickets last
-  update_global_tickets(-(p->tickets));
-
-  // Go to sleep.
-  p->chan = chan;
-  p->state = SLEEPING;
+  // Update global tickets
+  update_global_tickets(-p->tickets);
 
   sched();
 
@@ -570,9 +568,6 @@ wakeup1(void *chan)
     if(p->state == SLEEPING && p->chan == chan) {
       p->state = RUNNABLE;
       
-      // Update global pass first
-      update_global_pass();
-
       // Process rejoins the system
       p->pass = p->remain + global_pass;
 
@@ -605,22 +600,16 @@ kill(int pid)
     if(p->pid == pid){
       p->killed = 1;
       // Wake process from sleep if necessary.
-      if(p->state == SLEEPING)
+      if(p->state == SLEEPING) {
         p->state = RUNNABLE;
+
+        // New runnable, update global tickets
+        update_global_tickets((p->tickets));
+      }
       release(&ptable.lock);
       return 0;
     }
   }
-
-  // Update global pass first
-  update_global_pass();
-
-  // When a process leaves the scheduler queue, remain is computed as the
-  // difference between the process' pass and the global_pass
-  p->remain = p->pass - global_pass;
-
-  // Update global tickets last
-  update_global_tickets(-(p->tickets));
   
   release(&ptable.lock);
   return -1;
@@ -666,6 +655,7 @@ procdump(void)
 // Helper function to fill pstat with information on all 
 // processes from the process table
 void fill_pstat(struct pstat *pstat) {
+  acquire(&ptable.lock);
     for(int i = 0; i < NPROC; i++) {
         pstat->inuse[i] = (ptable.proc[i].state != UNUSED);
         pstat->tickets[i] = ptable.proc[i].tickets;
@@ -675,6 +665,7 @@ void fill_pstat(struct pstat *pstat) {
         pstat->stride[i] = ptable.proc[i].stride;
         pstat->rtime[i] = ptable.proc[i].runtime;
     }
+  release(&ptable.lock);
 }
 
 // Helper function for updating globals
@@ -687,6 +678,11 @@ void fill_pstat(struct pstat *pstat) {
 void update_global_tickets(int delta_tickets) {
   // Update global tickets
   global_tickets += delta_tickets;
+
+  // Make sure global_tickets doesn't go below zero
+  if (global_tickets < 0) {
+    global_tickets = 0;
+  }
   
   // Update global stride and pass
   if (global_tickets > 0) {
@@ -704,7 +700,10 @@ void update_global_pass() {
 
 // Helper function for updating ticket values
 void update_tickets(struct proc *p, int new_tickets) {
+  acquire(&ptable.lock);
+
   // Update tickets and calculate new stride
+  int old_tickets = p->tickets;
   int old_stride = p->stride;
 
   // Update tickets based on new tickets
@@ -718,4 +717,9 @@ void update_tickets(struct proc *p, int new_tickets) {
 
   // Update pass with new remain
   p->pass = global_pass + p->remain;
+
+  // if process is running, update global tickets
+  update_global_tickets(new_tickets-(old_tickets));
+  
+  release(&ptable.lock);
 }
