@@ -1,3 +1,7 @@
+////////////////
+// GIVEN CODE //
+////////////////
+
 // Flags for wmap
 #define MAP_SHARED 0x0002
 #define MAP_ANONYMOUS 0x0004
@@ -14,4 +18,20 @@ struct wmapinfo {
     int addr[MAX_WMMAP_INFO];           // Starting address of mapping
     int length[MAX_WMMAP_INFO];         // Size of mapping
     int n_loaded_pages[MAX_WMMAP_INFO]; // Number of pages physically loaded into memory
+};
+
+////////////////
+// ADDED CODE //
+////////////////
+
+// Define constants
+#define PAGE_SIZE 4096
+#define MAX_NUM_WMAPS 16
+
+// Structure to hold mapping region data
+struct wmap_region {
+    uint addr;     // Starting virtual address
+    int length;    // Length of the region in bytes
+    int flags;
+    int fd; // File descriptor for file-backed mapping
 };

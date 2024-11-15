@@ -99,7 +99,7 @@ sys_uptime(void)
 //  2. File-Backed Mapping: create a memory representation of a file
 // 
 // Returns: 
-//  Success: the starting virtual address of the memory on success
+//  Success: the starting virtual address of the memory
 //  Fail: FAILED
 int 
 sys_wmap(void){
@@ -108,29 +108,29 @@ sys_wmap(void){
   int flags; // file descriptor for the file to be mapped if file-backed mapping, can be ORed together
   int fd; // the kind of memory mapping you're requesting for, ignored if MAP_ANONYMOUS flag set
 
-  // Addr must a multiple of page size and within 0x60000000 and 0x80000000
+  ////////////////
+  // Get inputs //
+  ////////////////
+  if (argint(0, (int*)&addr) < 0){
+    // Failed to retrieve addr
+    return FAILED;
+  }
+  if (argint(1, &length) < 0){
+    // Failed to retrieve length
+    return FAILED;
+  }
+  if (argint(2, &flags) < 0){
+    // Failed to retrieve flags
+    return FAILED;
+  }
+  if (argint(3, &fd) < 0){
+    // Failed to retrieve fd
+    return FAILED;
+  }
 
-
-  // length must be greater than 0
-
-
-  // MAP_SHARED: Flag that tells wmap that the mapping is shared
-  //             Return error if not set
-
-
-  // MAP_FIXED: Flag that declares that the mapping MUST be placed at exactly addr
-  //            Return error if not set
-
-
-
-  // Lazy allocation: Don't actually allocate any physical pages when wmap is called
-  // Instead, keep track of the allocated region using some structure 
-  // i.e. "remember" the mappings for the process
-  // Most important to track: virtual address and length of the mapping
-
-
-  //  Success: return the starting virtual address of the memory on success
-  return 0;
+  // Success: return the starting virtual address of the memory on success
+  // Fail: return FAILED
+  return wmap_helper(addr, length, flags, fd);
 }
 
 // int wunmap(uint addr);
@@ -142,6 +142,14 @@ sys_wmap(void){
 int 
 sys_wunmap(void){
   uint addr;
+
+  ///////////////
+  // Get input //
+  ///////////////
+  if (argint(0, (int*)&addr) < 0){
+    // Failed to retrieve addr
+    return FAILED;
+  }
 
   return SUCCESS;
 }
@@ -156,6 +164,14 @@ uint
 sys_va2pa(void){
   uint va;
 
+  ///////////////
+  // Get input //
+  ///////////////
+  if (argint(0, (int*)&va) < 0){
+    // Failed to retrieve addr
+    return -1;
+  }
+
   return 0;
 }
 
@@ -168,6 +184,14 @@ sys_va2pa(void){
 int 
 sys_getwmapinfo(){
   struct wmapinfo *wminfo;
+
+  ///////////////
+  // Get input //
+  ///////////////
+  if (argptr(0, (char **)&wminfo, sizeof(*wminfo)) < 0) {
+    // Failed to retrieve the pointer to wmapinfo
+    return FAILED;
+  }
 
   return SUCCESS;
 }

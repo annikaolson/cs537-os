@@ -81,13 +81,31 @@ trap(struct trapframe *tf)
   // Page Fault generated, allocate a physical page and let the user resume execution //
   //////////////////////////////////////////////////////////////////////////////////////
   case T_PGFLT: // T_PGFLT = 14
-    if page fault addr is part of a mapping: // lazy allocation
-        // handle it
+    // Get faulting address
+    uint faulting_addr = rcr2();
+
+    // Check if the faulting address is part of a valid memory mapping
+    struct proc *p = myproc();
+    int found_index = valid_memory_mapping_index(p);
+
+    // QUESTION: do we need ptable lock? If yes, we should put the following proc.c
+    if(found_index >= 0 && found_region_index < 16){
+      // "Anonymous" Memory Allocation
+      if (p->wmap_regions[found_index].flags & MAP_ANONYMOUS){
         // TODO:
-    else:
+
+      }
+      // "File-Backed" Mapping: create a memory representation of a file
+      else {
+        // TODO:
+
+      }
+    }  
+    else{
         cprintf("Segmentation Fault\n");
         // kill the process
         myproc()->killed = 1;
+    }
 
   //PAGEBREAK: 13
   default:

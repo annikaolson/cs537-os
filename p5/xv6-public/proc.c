@@ -89,6 +89,12 @@ found:
   p->state = EMBRYO;
   p->pid = nextpid++;
 
+  ////////////////////////////////////////////////////////
+  // Initialize wmap regions struct and wmap_count to 0 //
+  ////////////////////////////////////////////////////////
+  p->wmap_count = 0;
+  memset(p->wmap_regions, 0, sizeof(p->wmap_regions));
+
   release(&ptable.lock);
 
   // Allocate kernel stack.
@@ -531,4 +537,98 @@ procdump(void)
     }
     cprintf("\n");
   }
+}
+
+// Helper method for wmap
+//
+// Returns: 
+//  Success: the starting virtual address of the memory
+//  Fail: FAILED
+int wmap_helper(uint addr, int length, int flags, int fd){
+  //////////////////////////////
+  // Check validity of inputs //
+  //////////////////////////////
+
+  // Addr must a multiple of page size and within 0x60000000 and 0x80000000
+  if (addr % PAGE_SIZE != 0 || addr < 0x60000000 || addr >= 0x80000000) {
+    // Address not page-aligned or out of allowed range
+    return FAILED;
+  }
+
+  // length must be greater than 0
+  if (length <= 0) {
+    // Invalid mapping length
+    return FAILED;
+  }
+
+  // MAP_SHARED: Flag that tells wmap that the mapping is shared
+  // MAP_FIXED: Flag that declares that the mapping MUST be placed at exactly addr
+  // Return error if MAP_SHARED and MAP_FIXED not set
+  if (!(flags & MAP_SHARED) || !(flags & MAP_FIXED)) {
+    // MAP_SHARED or MAP_FIXED flags not set
+    return FAILED;
+  }
+
+  // MAP_ANONYMOUS: Flag that this is NOT a file-backed mapping, if set ignore fd
+  // Otherwise assume fd belongs to a file of type FD_INODE and was opened in O_RDRW mode
+  // File-backed mapping: expect the map size to be equal to the file size
+  if (!(flags & MAP_ANONYMOUS)){
+    // Make sure we ignore fd and continue
+    fd = -1;
+  }
+
+  ///////////////////////////////////////////////////////
+  // Check if we hit the maximum number of memory maps //
+  ///////////////////////////////////////////////////////
+  acquire(&ptable.lock);
+
+  // Check if we allocate any more memory maps
+  if (p->wmap_count >= MAX_NUM_WMAPS){
+    // Cannot allocate any more maps
+    release(&ptable.lock);
+    return FAILED;
+  }
+
+  ////////////////////////////////////////////////////////////////////////
+  // Lazy Allocation:                                                   //
+  // Don't actually allocate any physical pages when wmap is called     //
+  // Instead, keep track of the allocated region using some structure   //
+  // i.e. "remember" the mappings for the process                       //
+  // Most important to track: virtual address and length of the mapping //
+  ////////////////////////////////////////////////////////////////////////
+
+  // Track the mapping in `wmap_regions`
+  struct wmap_region *region = &p->wmap_regions[p->wmap_count];
+  region->addr = addr;
+  region->length = length;
+  region->fd = fd;
+  p->wmap_count++;
+
+  release(&ptable.lock);
+
+  // Success: the starting virtual address of the memory
+  return addr;
+}
+
+// Helper function called by kernel to check if valid memory mapping
+// Success: returns wmap region index
+// Fail: returns -1
+int valid_memory_mapping_index(proc *p){
+  acquire(&ptable.lock);
+  // Iterate through the process's memory regions (wmap_regions)
+  for (int i = 0; i < p->wmap_count; i++) {
+    uint start_addr = p->wmap_regions[i].addr;
+    int length = p->wmap_regions[i].length;
+
+    // Check if the faulting address is within the bounds of this memory region
+    if (faulting_addr >= start_addr && faulting_addr < start_addr + length) {
+      // Success
+      release(&ptable.lock);
+      return i;
+    }
+  }
+
+  // Fail
+  release(&ptable.lock);
+  return -1;
 }
