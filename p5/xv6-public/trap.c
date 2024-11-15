@@ -77,6 +77,17 @@ trap(struct trapframe *tf)
             cpuid(), tf->cs, tf->eip);
     lapiceoi();
     break;
+  //////////////////////////////////////////////////////////////////////////////////////
+  // Page Fault generated, allocate a physical page and let the user resume execution //
+  //////////////////////////////////////////////////////////////////////////////////////
+  case T_PGFLT: // T_PGFLT = 14
+    if page fault addr is part of a mapping: // lazy allocation
+        // handle it
+        // TODO:
+    else:
+        cprintf("Segmentation Fault\n");
+        // kill the process
+        myproc()->killed = 1;
 
   //PAGEBREAK: 13
   default:
