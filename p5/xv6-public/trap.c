@@ -86,25 +86,56 @@ trap(struct trapframe *tf)
 
     // Check if the faulting address is part of a valid memory mapping
     struct proc *p = myproc();
+    if (p == 0) {
+      // error handle this case
+    }
     int found_index = valid_memory_mapping_index(p, faulting_addr);
 
-    // QUESTION: do we need ptable lock? If yes, we should put the following proc.c
-    if(found_index >= 0 && found_index < 16){
-      // "Anonymous" Memory Allocation
-      if (p->wmap_regions[found_index].flags & MAP_ANONYMOUS){
-        // TODO:
+    if (found_index >= 0 && found_index < MAX_NUM_WMAPS) { // lazy allocation
+      // struct of region for easy data access
+      struct wmap_region *region = &p->wmap_regions[found_index];
+      uint page_addr = PGROUNDDOWN(faulting_addr); // page-aligned VA
 
-      }
-      // "File-Backed" Mapping: create a memory representation of a file
-      else {
-        // TODO:
+      if (region->flags & MAP_ANONYMOUS) {  // anonymous mapping
+        char *new_page = kalloc();  // allocate physical page
+        if (!new_page) {  // allocation failed
+          p->killed = 1;
+          break;
+        }
 
+        // clear page and map it to faulting VA
+        memset(new_page, 0, PAGE_SIZE);
+        if (mappages(p->pgdir, page_addr, PAGE_SIZE, V2P(new_page), PTE_W | PTE_U) < 0) {
+          // failure mapping pages
+          kree(new_page);
+          p->killed = 1;
+          break;
+        }
+      } else {  // "File-Backed" Mapping: create a memory representation of a file
+        char *new_page = kalloc();  // allocate physical page
+        if (!new_page) {  // allocation failed
+          p->killed = 1;
+          break;
+        }
+
+        // read data from file into page
+        if (fileread(p->ofile[region->fd], new_page, PAGE_SIZE) != PAGE_SIZE) {
+          // reading file failed
+          kfree(new_page);
+          p->killed = 1;
+          break;
+        }
+
+        // map populated page
+        if (mappages(p->pgdir, page_addr, PGSIZE, V2P(new_page), PTE_W | PTE_U) < 0) {
+          // mapping page failed
+          kfree(new_page);
+          p->killed = 1;
+          break;
+        }
       }
-    }  
-    else{
-        cprintf("Segmentation Fault\n");
-        // kill the process
-        myproc()->killed = 1;
+
+      region->n_loaded_pages++; // increment num pages
     }
 
   //PAGEBREAK: 13

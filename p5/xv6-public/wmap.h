@@ -34,4 +34,5 @@ struct wmap_region {
     int length;    // Length of the region in bytes
     int flags;
     int fd; // File descriptor for file-backed mapping
+    int n_loaded_pages;
 };
