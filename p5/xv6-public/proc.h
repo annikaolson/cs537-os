@@ -51,7 +51,7 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
-  struct wmap_region wmap_regions[MAX_WMAP_REGIONS]; // Mapping region data struct
+  struct wmap_region wmap_regions[MAX_NUM_WMAPS]; // Mapping region data struct
   int wmap_count; // Number of active regions, cannot exceed 16
 };
 
