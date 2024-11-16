@@ -635,3 +635,48 @@ int valid_memory_mapping_index(struct proc *p, int faulting_addr){
   release(&ptable.lock);
   return -1;
 }
+
+// helper function for wunmap
+// returns 0 upon success, -1 upon fail
+int wunmap_helper(uint addr) {
+  struct proc *p = myproc();  // current process
+  int region_index = -1;
+
+  acquire(&ptable.lock);
+  // fincd mapping starting at addr
+  for (int i = 0; i < p->wmap_count; i++) {
+    if (p->wmap_regions[i].addr == addr) {
+      region_index = i; // found region to unmap
+      break;
+    }
+  }
+
+  // no mapping found
+  if (region_index == -1) {
+    release(&ptable.lock);
+    return FAILED;
+  }
+
+  // struct of region for easy data access
+  struct wmap_region *region = &p->wmap_regions[region_index];
+
+  // remove mapping from proc's memory regions
+  for (int i = region_index; i < p->wmap_count - 1; i++) {
+    p->wmap_regions[i] = p->wmap_regions[i + 1];
+  }
+  p->wmap_count--;
+
+  // remove mapping from page table
+  for (uint curr_addr = region->addr; curr_addr < region->addr + region->length; curr_addr += PAGE_SIZE) {
+    pte_t *pte = walkpgdir(p->pgdir, curr_addr, 0); // walks through page table to find PTE for add
+    if (pte && (*pte & PTE_P)) {  // check if PTE is valid and page is present in memory
+      *pte = 0; // clear PTE
+      uint physical_addr = PTE_ADDR(*pte);  // get physical address of PTE
+      kfree(P2V(physical_addr));  // free physical page mapped to VA
+    }
+  }
+
+  release(&ptable.lock);
+  return SUCCESS;
+
+}

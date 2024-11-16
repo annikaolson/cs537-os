@@ -150,8 +150,8 @@ sys_wunmap(void){
     // Failed to retrieve addr
     return FAILED;
   }
-
-  return SUCCESS;
+  
+  return wunmap_helper(addr);
 }
 
 // uint va2pa(uint va);
