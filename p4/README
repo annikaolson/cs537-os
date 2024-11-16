@@ -1,0 +1,9 @@
+What is the advantage of stride scheduling?
+
+One advantage of stride scheduling is fairness and proportionality for allocation. With round-robin, the implementation simply iterated over the processes and selected the runnable ones, each getting the same time slice. Here, we use a couple different factors to allocate CPU time more fairly as well as enabled priorities with the pass value. Stride scheduling also ensures that there shouldn't be starvation of processes. Overall, it allows for more fairness in regards to CPU time and when a process has different priorities and different resource needs, similar to how in the MLFQ there are different priorites for CPU-intensive versus I/O-intensive processes.
+
+What is the behavior/pattern of process runtimes observed because of dynamic process participation?
+
+As mentioned above, there is more fair CPU time sharing tied to their ticket value. Dynamic process participation in particular adds in global variables and accounts for processes joining or leaving the system. When a new process is added, its pass value is initialized at the global pass value such that they don't have to wait for the previous processes to finish before they get CPU time; the new processes also get a share of the CPU time that is proportional to their tickets. When a process leaves the system (i.e. goes to sleep), they aren't penalized for doing so - the remain value is recalcualted here as pass - global_pass. It "catches up" for the time it missed to ensure fair CPU scheduling. When a process rejoins the system (wakeup1), a similar system is employed where the pass value is recalculated.
+
+We are also able to dynamically adjust the process's tickets dynamically which also influences the runtime/allocation time tied in with what was metnioned above.
