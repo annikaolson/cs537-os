@@ -86,7 +86,7 @@ trap(struct trapframe *tf)
 
     // Check if the faulting address is part of a valid memory mapping
     struct proc *p = myproc();
-    int found_index = valid_memory_mapping_index(p);
+    int found_index = valid_memory_mapping_index(p, faulting_addr);
 
     // QUESTION: do we need ptable lock? If yes, we should put the following proc.c
     if(found_index >= 0 && found_index < 16){

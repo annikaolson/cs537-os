@@ -613,7 +613,7 @@ int wmap_helper(uint addr, int length, int flags, int fd){
 // Helper function called by kernel to check if valid memory mapping
 // Success: returns wmap region index
 // Fail: returns -1
-int valid_memory_mapping_index(proc *p){
+int valid_memory_mapping_index(proc *p, int faulting_addr){
   acquire(&ptable.lock);
   // Iterate through the process's memory regions (wmap_regions)
   for (int i = 0; i < p->wmap_count; i++) {
