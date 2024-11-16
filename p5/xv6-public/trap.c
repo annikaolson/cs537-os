@@ -84,59 +84,67 @@ trap(struct trapframe *tf)
     // Get faulting address
     uint faulting_addr = rcr2();
 
-    // Check if the faulting address is part of a valid memory mapping
+    // Check that process exists
     struct proc *p = myproc();
     if (p == 0) {
-      // error handle this case
+      // error handle this case, break? panic?
+      break;
     }
+
+    // Check if the faulting address is part of a valid memory mapping
     int found_index = valid_memory_mapping_index(p, faulting_addr);
 
     if (found_index >= 0 && found_index < MAX_NUM_WMAPS) { // lazy allocation
       // struct of region for easy data access
       struct wmap_region *region = &p->wmap_regions[found_index];
-      uint page_addr = PGROUNDDOWN(faulting_addr); // page-aligned VA
 
-      if (region->flags & MAP_ANONYMOUS) {  // anonymous mapping
-        char *new_page = kalloc();  // allocate physical page
-        if (!new_page) {  // allocation failed
-          p->killed = 1;
-          break;
-        }
+      // page aligned virtual address for the start and end of the region
+      uint region_start = PGROUNDDOWN(region->addr);
+      uint region_end = PGROUNDDOWN(region->addr + region->length);
 
-        // clear page and map it to faulting VA
-        memset(new_page, 0, PAGE_SIZE);
-        if (mappages(p->pgdir, page_addr, PAGE_SIZE, V2P(new_page), PTE_W | PTE_U) < 0) {
-          // failure mapping pages
-          kfree(new_page);
-          p->killed = 1;
-          break;
-        }
-      } else {  // "File-Backed" Mapping: create a memory representation of a file
-        char *new_page = kalloc();  // allocate physical page
-        if (!new_page) {  // allocation failed
-          kfree(new_page);
+      // allocate and map all missing pages in the region that the page fault occured
+      while (region_start < region_end) {
+        // allocate a physical page
+        char *new_page = kalloc();
+        if (!new_page) {
+          // allocation failed
           p->killed = 1;
           break;
         }
 
-        // read data from file into page
-        if (fileread(p->ofile[region->fd], new_page, PAGE_SIZE) != PAGE_SIZE) {
-          // reading file failed
+        // Anonymous mapping
+        if (region->flags & MAP_ANONYMOUS) { 
+          // clear the page
+          memset(new_page, 0, PAGE_SIZE);
+        } 
+        // File-Backed Mapping: create a memory representation of a file
+        else {
+          struct file *file = p->ofile[region->fd];
+          if (!file || fileread(f, new_page, PAGE_SIZE) != PAGE_SIZE) {
+            // reading from file failed
+            kfree(new_page);
+            p->killed = 1;
+            break;
+          }
+        }
+
+        // map the page
+        if (mappages(p->pgdir, region_start, PAGE_SIZE, V2P(new_page), PTE_W | PTE_U) < 0) {
+          // mapping failed
           kfree(new_page);
           p->killed = 1;
           break;
         }
 
-        // map populated page
-        if (mappages(p->pgdir, page_addr, PGSIZE, V2P(new_page), PTE_W | PTE_U) < 0) {
-          // mapping page failed
-          kfree(new_page);
-          p->killed = 1;
-          break;
-        }
+        region->n_loaded_pages++;  // increment the number of loaded pages
+        region_start += PAGE_SIZE; // move to the next page
       }
-
-      region->n_loaded_pages++; // increment num pages
+    }
+    // Page fault address is not a part of a mapping
+    else {
+      cprintf("Segmentation Fault\n");
+      // Kill the process
+      p->killed = 1;
     }
 
   //PAGEBREAK: 13
