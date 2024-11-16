@@ -107,13 +107,14 @@ trap(struct trapframe *tf)
         memset(new_page, 0, PAGE_SIZE);
         if (mappages(p->pgdir, page_addr, PAGE_SIZE, V2P(new_page), PTE_W | PTE_U) < 0) {
           // failure mapping pages
-          kree(new_page);
+          kfree(new_page);
           p->killed = 1;
           break;
         }
       } else {  // "File-Backed" Mapping: create a memory representation of a file
         char *new_page = kalloc();  // allocate physical page
         if (!new_page) {  // allocation failed
+          kfree(new_page);
           p->killed = 1;
           break;
         }
