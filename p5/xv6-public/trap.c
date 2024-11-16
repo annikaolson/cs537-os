@@ -146,6 +146,7 @@ trap(struct trapframe *tf)
       // Kill the process
       p->killed = 1;
     }
+    break;
 
   //PAGEBREAK: 13
   default:
