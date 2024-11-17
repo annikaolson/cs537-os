@@ -8,6 +8,8 @@
 #include "traps.h"
 #include "spinlock.h"
 
+#define PTE_FLAGS_MASK (PTE_W | PTE_U)
+
 // Interrupt descriptor table (shared by all CPUs).
 struct gatedesc idt[256];
 extern uint vectors[];  // in vectors.S: array of 256 entry pointers
@@ -87,57 +89,98 @@ trap(struct trapframe *tf)
     // Check if the faulting address is part of a valid memory mapping
     struct proc *p = myproc();
     if (p == 0) {
-      break;
+        break;
     }
+    
     int found_index = valid_memory_mapping_index(p, faulting_addr);
 
     if (found_index >= 0 && found_index < MAX_NUM_WMAPS) { // lazy allocation
       // struct of region for easy data access
       struct wmap_region *region = &p->wmap_regions[found_index];
       uint page_addr = PGROUNDDOWN(faulting_addr); // page-aligned VA
+      uint pte_flags = region->flags; // Get the PTE flags
 
-      if (region->flags & MAP_ANONYMOUS) {  // anonymous mapping
-        char *new_page = kalloc();  // allocate physical page
-        if (!new_page) {  // allocation failed
-          p->killed = 1;
-          break;
-        }
+      /////////////////////////
+      // Copy-on-Write Logic //
+      /////////////////////////
+      if (pte_flags & PTE_ORIGINAL_WRITE) {
+        // Walk the page directory to get the PTE for the faulting address
+        pte_t *pte = walkpgdir(p->pgdir, (void*)page_addr, 0);  // 0 for checking permissions
 
-        // clear page and map it to faulting VA
-        memset(new_page, 0, PAGE_SIZE);
-        if (mappages(p->pgdir, page_addr, PAGE_SIZE, V2P(new_page), PTE_W | PTE_U) < 0) {
-          // failure mapping pages
-          kree(new_page);
-          p->killed = 1;
-          break;
-        }
-      } else {  // "File-Backed" Mapping: create a memory representation of a file
-        char *new_page = kalloc();  // allocate physical page
-        if (!new_page) {  // allocation failed
-          p->killed = 1;
-          break;
-        }
+        if(ref_counts[PFN(PTE_ADDR(*pte))] > 1){
+          // Copy-on-write: allocate a new page and copy contents
+          char *new_page = kalloc();
+          if (new_page == 0) {
+            p->killed = 1;
+            break;
+          }
 
-        // read data from file into page
-        if (fileread(p->ofile[region->fd], new_page, PAGE_SIZE) != PAGE_SIZE) {
-          // reading file failed
-          kfree(new_page);
-          p->killed = 1;
-          break;
-        }
+          // Copy the original page contents
+          memmove(new_page, (char*)PTE_ADDR(*pte), PAGE_SIZE); 
+          
+          // Map the new page to the faulting address
+          if (mappages(p->pgdir, (void*)page_addr, PAGE_SIZE, V2P(new_page), PTE_W | PTE_U) < 0) {
+            kfree(new_page);
+            p->killed = 1;
+            break;
+          }
 
-        // map populated page
-        if (mappages(p->pgdir, page_addr, PGSIZE, V2P(new_page), PTE_W | PTE_U) < 0) {
-          // mapping page failed
-          kfree(new_page);
-          p->killed = 1;
-          break;
+            // Update the reference count for the original page
+            ref_counts[PFN(PTE_ADDR(*pte))]--;  // Decrement the reference count of the original page
+            ref_counts[PFN(V2P(new_page))]++;   // Increment the reference count of the new page
         }
+        
+        // The page is unique to this process, so just mark it writable
+        else {
+          // Set the new flags for the page
+          *pte = (*pte & ~PTE_FLAGS_MASK) | (PTE_W & PTE_FLAGS_MASK);  // Preserve other bits, update only the flags
+        } 
       }
 
-      region->n_loaded_pages++; // increment num pages
-    }
-    else{
+      ////////////////
+      // wmap Logic //
+      ////////////////
+      else {
+        char *new_page = kalloc();  // allocate physical page
+        if (!new_page) {  // allocation failed
+          p->killed = 1;
+          break;
+        }
+
+        ///////////////////////
+        // Anonymous mapping //
+        ///////////////////////
+        if (region->flags & MAP_ANONYMOUS) { 
+          // Clear the page
+          memset(new_page, 0, PAGE_SIZE);
+        } 
+        
+        /////////////////////////
+        // File-backed mapping //
+        /////////////////////////
+        else { 
+          // Read the page from the file
+          if (fileread(p->ofile[region->fd], new_page, PAGE_SIZE) != PAGE_SIZE) {
+            kfree(new_page);
+            p->killed = 1;
+            break;
+          }
+        }
+
+        // Map the populated page to the faulting address
+        if (mappages(p->pgdir, (void*)page_addr, PAGE_SIZE, V2P(new_page), PTE_W | PTE_U) < 0) {
+          kfree(new_page);
+          p->killed = 1;
+          break;
+        }
+
+        region->n_loaded_pages++; // increment num pages
+      }
+    } 
+    ////////////////////////
+    // Segmentation fault //
+    ////////////////////////
+    else {
         cprintf("Segmentation Fault\n");
         // kill the process
         myproc()->killed = 1;

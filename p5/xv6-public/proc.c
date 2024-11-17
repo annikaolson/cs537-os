@@ -7,6 +7,8 @@
 #include "proc.h"
 #include "spinlock.h"
 
+uint ref_counts[MAX_PFN]; // array for reference counts, 1 byte per page
+
 struct {
   struct spinlock lock;
   struct proc proc[NPROC];
@@ -218,9 +220,50 @@ fork(void)
 
   pid = np->pid;
 
+  // Copy parents page table to the child, have both marked as read only
+  for(i = 0; i < curproc->sz; i += PGSIZE){
+    pte_t *pte;
+    // Walk the parent's page table manually
+    pte = &curproc->pgdir[PDX(i)];  // Get the PTE for the current page
+    if(*pte & PTE_P) {  // If the page is present in the parent process
+      // Increment reference count for this page
+      uint page_frame_num = PGNUM(PTE_ADDR(*pte)); // Get physical frame number
+      if (ref_counts[page_frame_num] == 0){
+        ref_counts[page_frame_num] = 2;
+      } else {
+        ref_counts[page_frame_num]++;
+      }
+
+      // Check if the page is writable and does not already have PTE_COW
+      if (*pte & PTE_W) {
+        // Check if the PTE already has the PTE_COW flag
+        if (!(*pte & PTE_COW)) {
+          // Mark the page as read-only and set PTE_COW
+          *pte = (*pte & ~PTE_W) | PTE_COW;  // Clear PTE_W and set PTE_COW
+        }
+
+        // Map the same physical page into the child's page table
+        // Ensure the PTE is read-only and has the PTE_COW flag
+        np->pgdir[PDX(i)] = (*pte & ~PTE_W) | PTE_COW;  // Set PTE_COW and read-only for the child
+      } else {
+        // If the page is not writable, no need to modify for CoW
+        np->pgdir[PDX(i)] = *pte;  // Copy the page entry as is for non-writable pages
+      }
+    }
+  }
+
+  // Flush the TLB to ensure new PTEs are applied
+  lcr3(V2P(curproc->pgdir));  // Reload the CR3 register to invalidate the TLB
+  lcr3(V2P(np->pgdir));
+
   acquire(&ptable.lock);
 
   np->state = RUNNABLE;
+
+  // Copy memory mappings of parent to child
+  for (int i = 0; i < MAX_NUM_WMAPS; i++){
+    np->wmap_regions[i] = curproc->wmap_regions[i];
+  }
 
   release(&ptable.lock);
 
@@ -643,7 +686,7 @@ int wunmap_helper(uint addr) {
   int region_index = -1;
 
   acquire(&ptable.lock);
-  // fincd mapping starting at addr
+  // find mapping starting at addr
   for (int i = 0; i < p->wmap_count; i++) {
     if (p->wmap_regions[i].addr == addr) {
       region_index = i; // found region to unmap
@@ -668,11 +711,21 @@ int wunmap_helper(uint addr) {
 
   // remove mapping from page table
   for (uint curr_addr = region->addr; curr_addr < region->addr + region->length; curr_addr += PAGE_SIZE) {
-    pte_t *pte = walkpgdir(p->pgdir, curr_addr, 0); // walks through page table to find PTE for add
-    if (pte && (*pte & PTE_P)) {  // check if PTE is valid and page is present in memory
-      *pte = 0; // clear PTE
-      uint physical_addr = PTE_ADDR(*pte);  // get physical address of PTE
-      kfree(P2V(physical_addr));  // free physical page mapped to VA
+    // Calculate the page directory index and page table index
+    uint pdx = PDX(curr_addr);
+    uint ptx = PTX(curr_addr);
+
+    // Get the page table entry from the page directory (pgdir)
+    pde_t *pde = &p->pgdir[pdx];  // Get the page directory entry for the address
+    if (*pde & PTE_P) {  // Check if the page directory entry is present
+      pte_t *pt = (pte_t*)P2V(PTE_ADDR(*pde));  // Get the physical address of the page table
+      pte_t *pte = &pt[ptx];  // Get the page table entry for the address
+
+      if (*pte & PTE_P) {  // Check if the page table entry is valid and page is present in memory
+        uint physical_addr = PTE_ADDR(*pte);  // Get physical address from the PTE
+        *pte = 0;  // Clear the PTE (unmap the page)
+        kfree(P2V(physical_addr));  // Free the physical page mapped to this virtual address
+      }
     }
   }
 

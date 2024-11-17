@@ -27,6 +27,10 @@ struct wmapinfo {
 // Define constants
 #define PAGE_SIZE 4096
 #define MAX_NUM_WMAPS 16
+#define MAX_PFN (1024 * 1024) // 1,048,576 pages for 4GB of addressable space
+#define PGNUM(a)    (((uint)(a)) / PAGE_SIZE)
+#define PFN(va) ((uint)(va) >> 12)
+#define PTE_COW 1<<9
 
 // Structure to hold mapping region data
 struct wmap_region {

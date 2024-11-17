@@ -14,6 +14,7 @@ struct cpu {
 
 extern struct cpu cpus[NCPU];
 extern int ncpu;
+extern uint ref_counts[MAX_PFN];
 
 //PAGEBREAK: 17
 // Saved registers for kernel context switches.
@@ -54,6 +55,11 @@ struct proc {
   struct wmap_region wmap_regions[MAX_NUM_WMAPS]; // Mapping region data struct
   int wmap_count; // Number of active regions, cannot exceed 16
 };
+
+extern uint ref_counts[MAX_PFN];
+int wunmap_helper(uint addr);
+int valid_memory_mapping_index(struct proc *p, int faulting_addr);
+int wmap_helper(uint addr, int length, int flags, int fd);
 
 // Process memory is laid out contiguously, low addresses first:
 //   text
