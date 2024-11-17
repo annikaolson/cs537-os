@@ -1,6 +1,7 @@
 #include "types.h"
 #include "defs.h"
 #include "param.h"
+#include "file.h"
 #include "memlayout.h"
 #include "mmu.h"
 #include "x86.h"
@@ -618,9 +619,33 @@ int wmap_helper(uint addr, int length, int flags, int fd){
   // MAP_ANONYMOUS: Flag that this is NOT a file-backed mapping, if set ignore fd
   // Otherwise assume fd belongs to a file of type FD_INODE and was opened in O_RDRW mode
   // File-backed mapping: expect the map size to be equal to the file size
+  struct file *f = 0;
   if (!(flags & MAP_ANONYMOUS)){
-    // Make sure we ignore fd and continue
-    fd = -1;
+    // file-backed mapping
+    if (fd < 0 || fd >= NOFILE) {
+      return FAILED;  // invalid fd
+    }
+
+    // retrieve file pointer
+    struct file *f = p->ofile[fd];
+    if (!f) {
+      return FAILED;  // file not open
+    }
+
+    // ensure file is readable and writable
+    if (!(f->readable && f->writable)) {
+      return FAILED;
+    }
+
+    ilock(f->ip);
+    if (length > f->ip->size) {
+      iunlock(f->ip);
+      return FAILED;  // Mapping length exceeds file size
+    }
+    iunlock(f->ip);  // Unlock the inode
+
+  } else {  // anonymous, no file-backed mapping
+    fd = -1;  // ignore fd
   }
 
   ///////////////////////////////////////////////////////
@@ -703,6 +728,35 @@ int wunmap_helper(uint addr) {
   // struct of region for easy data access
   struct wmap_region *region = &p->wmap_regions[region_index];
 
+  // write back to disk for file-backed mappings
+  if (region->fd >= 0) {
+    struct file *f = p->ofile[region->fd];
+    // validate file
+    if (!f || f->type != FD_INODE || !(f->readable && f->writable)) {
+      release(&ptable.lock);
+      return FAILED;  // invalid file/not writable or readable
+    }
+    // lock inode for consistency when writing back changes
+    ilock(f->ip);
+    
+    // for each page in region, write back changes to file
+    for (uint va = region->addr; va < region->addr + region->length; va += PAGE_SIZE) {
+      pte_t *pte = walkpgdir(p->pgdir, (void *)va, 0);  // get pte for page
+      if (pte && (*pte & PTE_P)) {  // page exists in mem
+        uint physical_addr = PTE_ADDR(*pte);
+        char *mem = (char*)P2V(physical_addr);
+
+        // write page content back to file (offset always 0)
+        if (writei(f->ip, mem, va - region->addr, PAGE_SIZE) != PAGE_SIZE) {
+          iunlock(f->ip); // failed to write back page to file
+          release(&ptable.lock);
+          return FAILED;
+        }
+      }
+    }
+    iunlock(f->ip);
+  }
+
   // remove mapping from proc's memory regions
   for (int i = region_index; i < p->wmap_count - 1; i++) {
     p->wmap_regions[i] = p->wmap_regions[i + 1];
@@ -748,7 +802,7 @@ int getwmapinfo_helper(struct proc *p, struct wmapinfo *wminfo) {
 
     // count loaded pages for this region
     int loaded_pages = 0;
-    for (uint va = wminfo->addr[i]; va < wminfo->addr[i] + wminfo->length[i]; va += PGSIZE) {
+    for (uint va = wminfo->addr[i]; va < wminfo->addr[i] + wminfo->length[i]; va += PAGE_SIZE) {
       pte_t *pte = walkpgdir(p->pgdir, (void *)va, 0);  // get pte for page
       if (pte && (*pte & PTE_P)) {  // pte exists
         loaded_pages++;
