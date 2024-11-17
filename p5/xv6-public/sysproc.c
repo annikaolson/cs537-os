@@ -162,6 +162,8 @@ sys_wunmap(void){
 uint 
 sys_va2pa(void){
   uint va;
+  pte_t *pte;
+  uint pa;
 
   ///////////////
   // Get input //
@@ -171,7 +173,15 @@ sys_va2pa(void){
     return -1;
   }
 
-  return 0;
+  // get PTE for virtual address
+  if ((pte == walkpgdir(myproc()->pgdir, (void *)va, 0)) == 0 || !(*pte & PTE_P)) {
+    return -1;  // invalid VA or not present
+  }
+
+  // get physical address from PTE
+  pa = PTE_ADDR(*pte) | (va & 0xFFF); // page base addr with offset
+
+  return pa;
 }
 
 // int getwmapinfo(struct wmapinfo *wminfo);
