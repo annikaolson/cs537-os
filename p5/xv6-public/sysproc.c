@@ -174,10 +174,10 @@ sys_va2pa(void){
   }
 
   // get PTE for virtual address
-  if ((pte == walkpgdir(myproc()->pgdir, (void *)va, 0)) == 0 || !(*pte & PTE_P)) {
-    return FAILED;  // invalid VA or not present
+  pte = walkpgdir(myproc()->pgdir, (void *)va, 0);
+  if (pte == 0 || !(*pte & PTE_P)) {
+      return -1;  // invalid translation or not present
   }
-
   // get physical address from PTE
   pa = PTE_ADDR(*pte) | (va & 0xFFF); // page base addr with offset
 

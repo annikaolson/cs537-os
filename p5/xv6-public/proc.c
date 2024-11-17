@@ -1,12 +1,14 @@
 #include "types.h"
 #include "defs.h"
 #include "param.h"
-#include "file.h"
-#include "memlayout.h"
+#include "spinlock.h"
+#include "sleeplock.h"
+#include "fs.h"
 #include "mmu.h"
+#include "memlayout.h"
 #include "x86.h"
 #include "proc.h"
-#include "spinlock.h"
+#include "file.h"
 
 uint ref_counts[MAX_PFN]; // array for reference counts, 1 byte per page
 
@@ -619,7 +621,6 @@ int wmap_helper(uint addr, int length, int flags, int fd){
   // MAP_ANONYMOUS: Flag that this is NOT a file-backed mapping, if set ignore fd
   // Otherwise assume fd belongs to a file of type FD_INODE and was opened in O_RDRW mode
   // File-backed mapping: expect the map size to be equal to the file size
-  struct file *f = 0;
   if (!(flags & MAP_ANONYMOUS)){
     // file-backed mapping
     if (fd < 0 || fd >= NOFILE) {
