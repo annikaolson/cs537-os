@@ -733,3 +733,35 @@ int wunmap_helper(uint addr) {
   return SUCCESS;
 
 }
+
+int getwmapinfo_helper(struct proc *p, struct wmapinfo *wminfo) {
+  // initialize wminfo struct
+  memset(wminfo, 0, sizeof(struct wmapinfo));
+
+  acquire(&ptable.lock);
+
+  // iterate over active memory mappings
+  for (int i = 0; i < p->wmap_count && i < MAX_WMMAP_INFO; i++) {
+    // get address and length
+    wminfo->addr[i] = (uint)p->wmap_regions[i].addr;
+    wminfo->length[i] = p->wmap_regions[i].length;
+
+    // count loaded pages for this region
+    int loaded_pages = 0;
+    for (uint va = wminfo->addr[i]; va < wminfo->addr[i] + wminfo->length[i]; va += PGSIZE) {
+      pte_t *pte = walkpgdir(p->pgdir, (void *)va, 0);  // get pte for page
+      if (pte && (*pte & PTE_P)) {  // pte exists
+        loaded_pages++;
+      }
+    }
+    wminfo->n_loaded_pages[i] = loaded_pages;
+  }
+
+  // set total number of memory mappings
+  wminfo->total_mmaps = p->wmap_count;
+  
+  // success
+  return SUCCESS;
+
+
+}

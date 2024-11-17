@@ -170,12 +170,12 @@ sys_va2pa(void){
   ///////////////
   if (argint(0, (int*)&va) < 0){
     // Failed to retrieve addr
-    return -1;
+    return FAILED;
   }
 
   // get PTE for virtual address
   if ((pte == walkpgdir(myproc()->pgdir, (void *)va, 0)) == 0 || !(*pte & PTE_P)) {
-    return -1;  // invalid VA or not present
+    return FAILED;  // invalid VA or not present
   }
 
   // get physical address from PTE
@@ -193,7 +193,6 @@ sys_va2pa(void){
 int 
 sys_getwmapinfo(){
   struct wmapinfo *wminfo;
-
   ///////////////
   // Get input //
   ///////////////
@@ -202,5 +201,8 @@ sys_getwmapinfo(){
     return FAILED;
   }
 
-  return SUCCESS;
+  // initialize wmapinfo struct
+  memset(wminfo, 0, sizeof(struct wmapinfo));
+
+  return getwmapinfo_helper(myproc(), wminfo);
 }
