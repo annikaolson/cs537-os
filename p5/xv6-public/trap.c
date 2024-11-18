@@ -8,9 +8,6 @@
 #include "traps.h"
 #include "spinlock.h"
 
-#define PTE_FLAGS_MASK (PTE_W | PTE_U)
-#define PTE_COW 0x200
-
 // Interrupt descriptor table (shared by all CPUs).
 struct gatedesc idt[256];
 extern uint vectors[];  // in vectors.S: array of 256 entry pointers
@@ -99,12 +96,12 @@ trap(struct trapframe *tf)
       // struct of region for easy data access
       struct wmap_region *region = &p->wmap_regions[found_index];
       uint page_addr = PGROUNDDOWN(faulting_addr); // page-aligned VA
-      //pte_t *pte = pte = walkpgdir(p->pgdir, (void*)faulting_addr, 0);
+      pte_t *pte = pte = walkpgdir(p->pgdir, (void*)faulting_addr, 0);
 
       //////////////////////////////////////////////////////////////
       // Fault caused by writing to a read-only page with PTE_COW //
       //////////////////////////////////////////////////////////////
-      /*if((*pte & PTE_P) && (*pte & PTE_COW)) {
+      if((*pte & PTE_P) && (*pte & PTE_COW)) {
         uint pa = PTE_ADDR(*pte);
 
         // alloc new page
@@ -125,8 +122,9 @@ trap(struct trapframe *tf)
         }
 
         // decrement reference count
-        ref_counts[pa / PGSIZE]--;
-        if(ref_counts[pa / PGSIZE] == 0) {
+        decrement_ref_count(pa);
+        
+        if(get_ref_count(pa) == 0) {
           // if no other process using this page, free it
           kfree((char*)P2V(pa));
         }
@@ -137,7 +135,7 @@ trap(struct trapframe *tf)
       ///////////////////////////////////
       // Otherwise, WMAP related fault //
       ///////////////////////////////////
-      else {*/
+      else {
         ////////////////
         // wmap Logic //
         ////////////////
@@ -175,7 +173,7 @@ trap(struct trapframe *tf)
         }
 
         region->n_loaded_pages++; // increment num pages
-      // /}
+      }
     } 
     ////////////////////////
     // Segmentation fault //

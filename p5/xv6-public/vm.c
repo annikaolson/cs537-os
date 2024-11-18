@@ -9,6 +9,7 @@
 
 extern char data[];  // defined by kernel.ld
 pde_t *kpgdir;  // for use in scheduler()
+static uchar ref_count[PFN_MAX] = {0};
 
 // Set up CPU's kernel segment descriptors.
 // Run once on entry on each CPU.
@@ -400,3 +401,30 @@ copyout(pde_t *pgdir, uint va, void *p, uint len)
 // Blank page.
 //PAGEBREAK!
 // Blank page.
+
+// Increment the reference count for a given physical page
+void increment_ref_count(uint paddr) {
+    int page_idx = paddr / PGSIZE;  // Use uint for physical address
+    if (page_idx < PFN_MAX) {
+        if (ref_count[page_idx] < 255) {
+            ref_count[page_idx]++;
+        }
+    }
+}
+
+// Decrement the reference count for a given physical page
+void decrement_ref_count(uint paddr) {
+    int page_idx = paddr / PGSIZE;
+    if (page_idx < PFN_MAX && ref_count[page_idx] > 0) {
+        ref_count[page_idx]--;
+    }
+}
+
+// Get the current reference count for a given physical page
+uchar get_ref_count(uint paddr) {
+    int page_idx = paddr / PGSIZE;
+    if (page_idx < PFN_MAX) {
+        return ref_count[page_idx];
+    }
+    return 0;  // If out of bounds, return 0
+}
