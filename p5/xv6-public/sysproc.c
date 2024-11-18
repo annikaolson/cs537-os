@@ -150,8 +150,7 @@ sys_wunmap(void){
     return FAILED;
   }
   
-  //return wunmap_helper(addr);
-  return SUCCESS;
+  return wunmap_helper(addr);
 }
 
 // uint va2pa(uint va);

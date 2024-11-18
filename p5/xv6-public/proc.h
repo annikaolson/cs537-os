@@ -58,6 +58,7 @@ struct proc {
 //int wunmap_helper(uint addr);
 int valid_memory_mapping_index(struct proc *p, uint faulting_addr);
 int wmap_helper(uint addr, int length, int flags, int fd);
+int wunmap_helper(uint addr);
 int getwmapinfo_helper(struct proc *p, struct wmapinfo *wminfo);
 extern pte_t* walkpgdir(pde_t *pgdir, const void *va, int alloc);
 

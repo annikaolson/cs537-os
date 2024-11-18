@@ -725,34 +725,42 @@ int wunmap_helper(uint addr) {
   // struct of region for easy data access
   struct wmap_region *region = &p->wmap_regions[region_index];
 
-  // write back to disk for file-backed mappings
-  if (region->fd >= 0) {
-    struct file *f = p->ofile[region->fd];
-    // validate file
+  if (!(region->flags & MAP_ANONYMOUS)) {
+    struct file *f = region->file;
+
+    // Validate file
     if (!f || f->type != FD_INODE || !(f->readable && f->writable)) {
       release(&ptable.lock);
-      return FAILED;  // invalid file/not writable or readable
+      return FAILED;  // Invalid file/not writable or readable
     }
-    // lock inode for consistency when writing back changes
-    ilock(f->ip);
-    
-    // for each page in region, write back changes to file
+    release(&ptable.lock);
+
+    // Lock inode for consistency when writing back changes
+    begin_op();  // Begin file operation (this may acquire locks internally)
+    ilock(f->ip);  // Lock inode to modify
+
+    // For each page in the region, write back changes to the file
     for (uint va = region->addr; va < region->addr + region->length; va += PAGE_SIZE) {
-      pte_t *pte = walkpgdir(p->pgdir, (void *)va, 0);  // get pte for page
-      if (pte && (*pte & PTE_P)) {  // page exists in mem
+      pte_t *pte = walkpgdir(p->pgdir, (void *)va, 0);  // Get PTE for page
+      if (pte && (*pte & PTE_P)) {  // Page exists in memory
         uint physical_addr = PTE_ADDR(*pte);
         char *mem = (char*)P2V(physical_addr);
 
-        // write page content back to file (offset always 0)
+        // Write page content back to file (use the correct offset)
         if (writei(f->ip, mem, va - region->addr, PAGE_SIZE) != PAGE_SIZE) {
-          iunlock(f->ip); // failed to write back page to file
-          release(&ptable.lock);
+          iunlock(f->ip);  // Unlock inode if the write fails
+          end_op();  // End the operation (release file system locks)
           return FAILED;
         }
       }
     }
-    iunlock(f->ip);
+
+    iunlock(f->ip);  // Unlock inode after the write operation
+    end_op();  // End file operation
+    fileclose(f);  // Close file after operation
   }
+
+  acquire(&ptable.lock);
 
   // remove mapping from proc's memory regions
   for (int i = region_index; i < p->wmap_count - 1; i++) {
@@ -762,6 +770,7 @@ int wunmap_helper(uint addr) {
   p->wmap_regions[p->wmap_count-1].addr = 0;
   p->wmap_regions[p->wmap_count-1].length = 0;
   p->wmap_regions[p->wmap_count-1].flags = 0;
+  p->wmap_regions[p->wmap_count-1].file = 0;
   p->wmap_regions[p->wmap_count-1].fd = 0;
   p->wmap_regions[p->wmap_count-1].n_loaded_pages = 0;
   p->wmap_count--;
@@ -785,6 +794,8 @@ int wunmap_helper(uint addr) {
       }
     }
   }
+
+  lcr3(V2P(p->pgdir));
 
   release(&ptable.lock);
   return SUCCESS;
