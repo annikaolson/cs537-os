@@ -657,6 +657,7 @@ int wmap_helper(uint addr, int length, int flags, int fd){
   struct wmap_region *region = &p->wmap_regions[p->wmap_count];
   region->addr = addr;
   region->length = length;
+  region->flags = flags;
   region->fd = fd;
   p->wmap_count++;
 
