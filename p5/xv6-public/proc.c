@@ -736,10 +736,6 @@ int wunmap_helper(uint addr) {
       return FAILED;  // Invalid file/not writable or readable
     }
 
-    // Lock inode for consistency when writing back changes
-    begin_op();  // Begin file operation (this may acquire locks internally)
-    ilock(f->ip);  // Lock inode to modify
-
     // For each page in the region, write back changes to the file
     for (uint va = region->addr; va < region->addr + region->length; va += PAGE_SIZE) {
       pte_t *pte = walkpgdir(p->pgdir, (void *)va, 0);  // Get PTE for page
@@ -747,17 +743,19 @@ int wunmap_helper(uint addr) {
         uint physical_addr = PTE_ADDR(*pte);
         char *mem = (char*)P2V(physical_addr);
 
+        begin_op();
+        ilock(f->ip);  // Lock inode to modify
         // Write page content back to file (use the correct offset)
-        if (writei(f->ip, mem, va - region->addr, PAGE_SIZE) != PAGE_SIZE) {
+        if (writei(f->ip, mem, va - region->addr, PAGE_SIZE) > PAGE_SIZE) {
           iunlock(f->ip);  // Unlock inode if the write fails
           end_op();  // End the operation (release file system locks)
+          fileclose(f);
           return FAILED;
         }
+        iunlock(f->ip);
+        end_op();
       }
     }
-
-    iunlock(f->ip);  // Unlock inode after the write operation
-    end_op();  // End file operation
     fileclose(f);  // Close file after operation
   }
 
