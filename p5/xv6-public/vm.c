@@ -32,7 +32,7 @@ seginit(void)
 // Return the address of the PTE in page table pgdir
 // that corresponds to virtual address va.  If alloc!=0,
 // create any required page table pages.
-static pte_t *
+pte_t *
 walkpgdir(pde_t *pgdir, const void *va, int alloc)
 {
   pde_t *pde;
@@ -57,7 +57,7 @@ walkpgdir(pde_t *pgdir, const void *va, int alloc)
 // Create PTEs for virtual addresses starting at va that refer to
 // physical addresses starting at pa. va and size might not
 // be page-aligned.
-static int
+int
 mappages(pde_t *pgdir, void *va, uint size, uint pa, int perm)
 {
   char *a, *last;
@@ -195,7 +195,7 @@ inituvm(pde_t *pgdir, char *init, uint sz)
 // Load a program segment into pgdir.  addr must be page-aligned
 // and the pages from addr to addr+sz must already be mapped.
 int
-loaduvm(pde_t *pgdir, char *addr, struct inode *ip, uint offset, uint sz)
+loaduvm(pde_t *pgdir, char *addr, struct inode *ip, uint offset, uint sz, uint flags)
 {
   uint i, pa, n;
   pte_t *pte;
@@ -212,6 +212,15 @@ loaduvm(pde_t *pgdir, char *addr, struct inode *ip, uint offset, uint sz)
       n = PGSIZE;
     if(readi(ip, P2V(pa), offset+i, n) != n)
       return -1;
+
+    // set permissions on PTE based on flags
+    if (flags & 0x2) {  // PF_W = 0x2
+      // segment is writeable, set write permission
+      *pte |= PTE_W;
+    } else {
+      // read-only
+      *pte &= ~PTE_W;
+    }
   }
   return 0;
 }

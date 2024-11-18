@@ -95,8 +95,8 @@ found:
   ////////////////////////////////////////////////////////
   // Initialize wmap regions struct and wmap_count to 0 //
   ////////////////////////////////////////////////////////
-  /*p->wmap_count = 0;
-  memset(p->wmap_regions, 0, sizeof(p->wmap_regions));*/
+  p->wmap_count = 0;
+  memset(p->wmap_regions, 0, sizeof(p->wmap_regions));
 
   release(&ptable.lock);
 
@@ -224,7 +224,7 @@ fork(void)
   acquire(&ptable.lock);
 
   np->state = RUNNABLE;
-  /*
+  
   for (int i = 0; i < MAX_NUM_WMAPS; i++) {
     if (curproc->wmap_regions[i].addr && curproc->wmap_regions[i].addr != 0) {  // Ensure the mapping is valid
       np->wmap_regions[i].addr = curproc->wmap_regions[i].addr;
@@ -235,7 +235,7 @@ fork(void)
     }
   }
 
-  np->wmap_count = curproc->wmap_count;*/
+  np->wmap_count = curproc->wmap_count;
 
   release(&ptable.lock);
 
@@ -630,6 +630,21 @@ int wmap_helper(uint addr, int length, int flags, int fd){
     return FAILED;
   }
 
+    /////////////////////////////////////////
+  // Check for overlapping memory regions//
+  /////////////////////////////////////////
+  uint new_map_end = addr + length;
+  for (int i = 0; i < p->wmap_count; i++) {
+    uint region_start = p->wmap_regions[i].addr;
+    uint region_end = region_start + p->wmap_regions[i].length;
+
+    // check if the new mapping overlaps with an existing one
+    if (!(new_map_end <= region_start || addr >= region_end)) {
+      release(&ptable.lock);
+      return FAILED;
+    }
+  }
+
   ////////////////////////////////////////////////////////////////////////
   // Lazy Allocation:                                                   //
   // Don't actually allocate any physical pages when wmap is called     //
@@ -675,9 +690,8 @@ int valid_memory_mapping_index(struct proc *p, uint faulting_addr){
   return -1;
 }
 
-/*
 // helper function for wunmap
-// returns 0 upon success, -1 upon fail
+// returns 0 upon success, -1 upon fail 
 int wunmap_helper(uint addr) {
   struct proc *p = myproc();  // current process
   int region_index = -1;
@@ -790,4 +804,4 @@ int getwmapinfo_helper(struct proc *p, struct wmapinfo *wminfo) {
 
   // success
   return SUCCESS;
-}*/
+}

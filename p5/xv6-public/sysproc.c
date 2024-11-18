@@ -102,7 +102,7 @@ sys_uptime(void)
 //  Fail: FAILED
 int 
 sys_wmap(void){
-  /*uint addr; // mapping placed at exactly addr, MAP_FIXED flag must be set
+  uint addr; // mapping placed at exactly addr, MAP_FIXED flag must be set
   int length; // the length of the mapping in bytes, greater than 0
   int flags; // file descriptor for the file to be mapped if file-backed mapping, can be ORed together
   int fd; // the kind of memory mapping you're requesting for, ignored if MAP_ANONYMOUS flag set
@@ -129,7 +129,7 @@ sys_wmap(void){
 
   // Success: return the starting virtual address of the memory on success
   // Fail: return FAILED
-  return wmap_helper(addr, length, flags, fd);*/
+  return wmap_helper(addr, length, flags, fd);
   return FAILED;
 }
 
@@ -141,7 +141,7 @@ sys_wmap(void){
 //  Fail: FAILED
 int 
 sys_wunmap(void){
-  /*uint addr;
+  uint addr;
 
   ///////////////
   // Get input //
@@ -151,7 +151,7 @@ sys_wunmap(void){
     return FAILED;
   }
   
-  //return wunmap_helper(addr);*/
+  //return wunmap_helper(addr);
   return SUCCESS;
 }
 
@@ -163,7 +163,7 @@ sys_wunmap(void){
 //  Fail: -1
 uint 
 sys_va2pa(void){
-  /*uint va;
+  uint va;
   pte_t *pte;
   uint pa;
 
@@ -183,8 +183,7 @@ sys_va2pa(void){
   // get physical address from PTE
   pa = PTE_ADDR(*pte) | (va & 0xFFF); // page base addr with offset
 
-  return pa;*/
-  return FAILED;
+  return pa;
 }
 
 // int getwmapinfo(struct wmapinfo *wminfo);
@@ -195,7 +194,7 @@ sys_va2pa(void){
 //  Fail: FAILED
 int 
 sys_getwmapinfo(){
-  /*struct wmapinfo *wminfo;
+  struct wmapinfo *wminfo;
   ///////////////
   // Get input //
   ///////////////
@@ -207,6 +206,5 @@ sys_getwmapinfo(){
   // initialize wmapinfo struct
   memset(wminfo, 0, sizeof(struct wmapinfo));
 
-  return getwmapinfo_helper(myproc(), wminfo);*/
-  return SUCCESS;
+  return getwmapinfo_helper(myproc(), wminfo);
 }

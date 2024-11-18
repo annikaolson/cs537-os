@@ -1,6 +1,9 @@
 ////////////////
 // GIVEN CODE //
 ////////////////
+#ifndef WMAP
+#define WMAP
+
 // Flags for wmap
 #define MAP_SHARED 0x0002
 #define MAP_ANONYMOUS 0x0004
@@ -37,3 +40,5 @@ struct wmap_region {
     int fd; // File descriptor for file-backed mapping
     int n_loaded_pages;
 };
+
+#endif
