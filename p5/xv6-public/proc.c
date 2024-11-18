@@ -726,7 +726,7 @@ int wunmap_helper(uint addr) {
   struct wmap_region *region = &p->wmap_regions[region_index];
 
   release(&ptable.lock);
-  
+
   if (!(region->flags & MAP_ANONYMOUS)) {
     struct file *f = region->file;
 
@@ -763,19 +763,6 @@ int wunmap_helper(uint addr) {
 
   acquire(&ptable.lock);
 
-  // remove mapping from proc's memory regions
-  for (int i = region_index; i < p->wmap_count - 1; i++) {
-    p->wmap_regions[i] = p->wmap_regions[i + 1];
-  }
-
-  p->wmap_regions[p->wmap_count-1].addr = 0;
-  p->wmap_regions[p->wmap_count-1].length = 0;
-  p->wmap_regions[p->wmap_count-1].flags = 0;
-  p->wmap_regions[p->wmap_count-1].file = 0;
-  p->wmap_regions[p->wmap_count-1].fd = 0;
-  p->wmap_regions[p->wmap_count-1].n_loaded_pages = 0;
-  p->wmap_count--;
-
   // remove mapping from page table
   for (uint curr_addr = region->addr; curr_addr < region->addr + region->length; curr_addr += PAGE_SIZE) {
     // Calculate the page directory index and page table index
@@ -791,10 +778,23 @@ int wunmap_helper(uint addr) {
       if (*pte & PTE_P) {  // Check if the page table entry is valid and page is present in memory
         uint physical_addr = PTE_ADDR(*pte);  // Get physical address from the PTE
         kfree(P2V(physical_addr));  // Free the physical page mapped to this virtual address
-        *pte = 0;  // Clear the PTE (unmap the page)
       }
+      *pte = 0;  // Clear the PTE (unmap the page)
     }
   }
+
+  // remove mapping from proc's memory regions
+  for (int i = region_index; i < p->wmap_count - 1; i++) {
+    p->wmap_regions[i] = p->wmap_regions[i + 1];
+  }
+
+  p->wmap_regions[p->wmap_count-1].addr = 0;
+  p->wmap_regions[p->wmap_count-1].length = 0;
+  p->wmap_regions[p->wmap_count-1].flags = 0;
+  p->wmap_regions[p->wmap_count-1].file = 0;
+  p->wmap_regions[p->wmap_count-1].fd = 0;
+  p->wmap_regions[p->wmap_count-1].n_loaded_pages = 0;
+  p->wmap_count--;
 
   lcr3(V2P(p->pgdir));
 
