@@ -14,7 +14,6 @@ struct cpu {
 
 extern struct cpu cpus[NCPU];
 extern int ncpu;
-extern uint ref_counts[MAX_PFN];
 
 extern pte_t *walkpgdir(pde_t *pgdir, const void *va, int alloc);
 
@@ -58,9 +57,9 @@ struct proc {
   int wmap_count; // Number of active regions, cannot exceed 16
 };
 
-extern uint ref_counts[MAX_PFN];
+extern uint ref_counts[];
 int wunmap_helper(uint addr);
-int valid_memory_mapping_index(struct proc *p, int faulting_addr);
+uint valid_memory_mapping_index(struct proc *p, uint faulting_addr);
 int wmap_helper(uint addr, int length, int flags, int fd);
 int getwmapinfo_helper(struct proc *p, struct wmapinfo *wminfo);
 

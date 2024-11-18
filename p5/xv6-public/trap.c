@@ -95,93 +95,89 @@ trap(struct trapframe *tf)
         break;
     }
     
-    int found_index = valid_memory_mapping_index(p, faulting_addr);
+    uint found_index = valid_memory_mapping_index(p, faulting_addr);
 
     if (found_index >= 0 && found_index < MAX_NUM_WMAPS) { // lazy allocation
       // struct of region for easy data access
       struct wmap_region *region = &p->wmap_regions[found_index];
       uint page_addr = PGROUNDDOWN(faulting_addr); // page-aligned VA
+      pte_t *pte = pte = walkpgdir(p->pgdir, (void*)faulting_addr, 0);
 
-      /////////////////////////
-      // Copy-on-Write Logic //
-      /////////////////////////
-      // Walk the page directory to get the PTE for the faulting address
-      pte_t *pte = walkpgdir(p->pgdir, (void*)page_addr, 0);  // 0 for checking permissions
-      if (!pte) {  // PTE doesn't exist
-        p->killed = 1;
-        break;
-      }
+      //////////////////////////////////////////////////////////////
+      // Fault caused by writing to a read-only page with PTE_COW //
+      //////////////////////////////////////////////////////////////
+      if((*pte & PTE_P) && (*pte & PTE_COW)) {
+        uint pa = PTE_ADDR(*pte);
 
-      // Get the physical frame number of the faulting page
-      uint page_frame = PFN(PTE_ADDR(*pte));
-
-      // Check if the page is shared (i.e., reference count > 1)
-      if (ref_counts[page_frame] > 1) {
-        // Copy-on-write: Allocate a new page and copy contents
+        // alloc new page
         char *new_page = kalloc();
-        if (new_page == 0) {
+        if (!new_page) {  // allocation failed
           p->killed = 1;
           break;
         }
 
-        // Copy the original page contents to the new page
-        memmove(new_page, (char*)PTE_ADDR(*pte), PAGE_SIZE); 
+        // copy old page to new page
+        memmove(new_page, (char*)P2V(pa), PGSIZE);
 
-        // Map the new page to the faulting address
+        // mark new page as writable
+        if(mappages(p->pgdir, (void*)faulting_addr, PGSIZE, V2P(new_page), PTE_W | PTE_U) < 0){
+          kfree(new_page);
+          p->killed = 1;
+          break;
+        }
+
+        // decrement reference count
+        ref_counts[pa / PGSIZE]--;
+        if(ref_counts[pa / PGSIZE] == 0) {
+          // if no other process using this page, free it
+          kfree((char*)P2V(pa));
+        }
+
+        // update page table entry to point to the new writable page
+        *pte = V2P(new_page) | PTE_U | PTE_W | PTE_P;  // Mark as writable
+      } 
+      ///////////////////////////////////
+      // Otherwise, WMAP related fault //
+      ///////////////////////////////////
+      else {
+        ////////////////
+        // wmap Logic //
+        ////////////////
+        char *new_page = kalloc();  // allocate physical page
+        if (!new_page) {  // allocation failed
+          p->killed = 1;
+          break;
+        }
+
+        ///////////////////////
+        // Anonymous mapping //
+        ///////////////////////
+        if (region->flags & MAP_ANONYMOUS) { 
+          // Clear the page
+          memset(new_page, 0, PAGE_SIZE);
+        } 
+        
+        /////////////////////////
+        // File-backed mapping //
+        /////////////////////////
+        else { 
+          // Read the page from the file
+          if (fileread(p->ofile[region->fd], new_page, PAGE_SIZE) != PAGE_SIZE) {
+            kfree(new_page);
+            p->killed = 1;
+            break;
+          }
+        }
+
+        // Map the populated page to the faulting address
         if (mappages(p->pgdir, (void*)page_addr, PAGE_SIZE, V2P(new_page), PTE_W | PTE_U) < 0) {
           kfree(new_page);
           p->killed = 1;
           break;
         }
 
-        // Update the reference count for the original page
-        ref_counts[page_frame]--;  // Decrement the reference count of the original page
-        ref_counts[PFN(V2P(new_page))]++;   // Increment the reference count of the new page
-        break;
+        region->n_loaded_pages++; // increment num pages
       }
-      // The page is unique to this process, so just mark it writable
-      else {
-        // Set the new flags for the page (make it writable)
-        *pte = (*pte & ~PTE_FLAGS_MASK) | (PTE_W & PTE_FLAGS_MASK);  // Preserve other bits, update only the flags
-      }
-
-      ////////////////
-      // wmap Logic //
-      ////////////////
-      char *new_page = kalloc();  // allocate physical page
-      if (!new_page) {  // allocation failed
-        p->killed = 1;
-        break;
-      }
-
-      ///////////////////////
-      // Anonymous mapping //
-      ///////////////////////
-      if (region->flags & MAP_ANONYMOUS) { 
-        // Clear the page
-        memset(new_page, 0, PAGE_SIZE);
-      } 
-      
-      /////////////////////////
-      // File-backed mapping //
-      /////////////////////////
-      else { 
-        // Read the page from the file
-        if (fileread(p->ofile[region->fd], new_page, PAGE_SIZE) != PAGE_SIZE) {
-          kfree(new_page);
-          p->killed = 1;
-          break;
-        }
-      }
-
-      // Map the populated page to the faulting address
-      if (mappages(p->pgdir, (void*)page_addr, PAGE_SIZE, V2P(new_page), PTE_W | PTE_U) < 0) {
-        kfree(new_page);
-        p->killed = 1;
-        break;
-      }
-
-      region->n_loaded_pages++; // increment num pages
     } 
     ////////////////////////
     // Segmentation fault //

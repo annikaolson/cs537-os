@@ -10,8 +10,6 @@
 #include "proc.h"
 #include "file.h"
 
-uint ref_counts[MAX_PFN]; // array for reference counts, 1 byte per page
-
 struct {
   struct spinlock lock;
   struct proc proc[NPROC];
@@ -222,42 +220,6 @@ fork(void)
   safestrcpy(np->name, curproc->name, sizeof(curproc->name));
 
   pid = np->pid;
-
-  // Copy parents page table to the child, have both marked as read only
-  for(i = 0; i < curproc->sz; i += PGSIZE){
-    pte_t *pte;
-    // Walk the parent's page table manually
-    pte = &curproc->pgdir[PDX(i)];  // Get the PTE for the current page
-    if(*pte & PTE_P) {  // If the page is present in the parent process
-      // Increment reference count for this page
-      uint page_frame_num = PGNUM(PTE_ADDR(*pte)); // Get physical frame number
-      if (ref_counts[page_frame_num] == 0){
-        ref_counts[page_frame_num] = 2;
-      } else {
-        ref_counts[page_frame_num]++;
-      }
-
-      // Check if the page is writable and does not already have PTE_COW
-      if (*pte & PTE_W) {
-        // Check if the PTE already has the PTE_COW flag
-        if (!(*pte & PTE_COW)) {
-          // Mark the page as read-only and set PTE_COW
-          *pte = (*pte & ~PTE_W) | PTE_COW;  // Clear PTE_W and set PTE_COW
-        }
-
-        // Map the same physical page into the child's page table
-        // Ensure the PTE is read-only and has the PTE_COW flag
-        np->pgdir[PDX(i)] = (*pte & ~PTE_W) | PTE_COW;  // Set PTE_COW and read-only for the child
-      } else {
-        // If the page is not writable, no need to modify for CoW
-        np->pgdir[PDX(i)] = *pte;  // Copy the page entry as is for non-writable pages
-      }
-    }
-  }
-
-  // Flush the TLB to ensure new PTEs are applied
-  lcr3(V2P(curproc->pgdir));  // Reload the CR3 register to invalidate the TLB
-  lcr3(V2P(np->pgdir));
 
   acquire(&ptable.lock);
 
@@ -685,7 +647,7 @@ int wmap_helper(uint addr, int length, int flags, int fd){
 // Helper function called by kernel to check if valid memory mapping
 // Success: returns wmap region index
 // Fail: returns -1
-int valid_memory_mapping_index(struct proc *p, int faulting_addr){
+uint valid_memory_mapping_index(struct proc *p, uint faulting_addr){
   acquire(&ptable.lock);
   // Iterate through the process's memory regions (wmap_regions)
   for (int i = 0; i < p->wmap_count; i++) {
@@ -815,8 +777,8 @@ int getwmapinfo_helper(struct proc *p, struct wmapinfo *wminfo) {
   // set total number of memory mappings
   wminfo->total_mmaps = p->wmap_count;
   
+  release(&ptable.lock);
+
   // success
   return SUCCESS;
-
-
 }

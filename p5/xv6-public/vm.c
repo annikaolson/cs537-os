@@ -9,6 +9,7 @@
 
 extern char data[];  // defined by kernel.ld
 pde_t *kpgdir;  // for use in scheduler()
+uint ref_counts[MAX_PFN];
 
 // Set up CPU's kernel segment descriptors.
 // Run once on entry on each CPU.
@@ -328,25 +329,41 @@ copyuvm(pde_t *pgdir, uint sz)
   pde_t *d;
   pte_t *pte;
   uint pa, i, flags;
-  char *mem;
 
+  // setups new page directory for the child process
   if((d = setupkvm()) == 0)
     return 0;
-  for(i = 0; i < sz; i += PGSIZE){
-    if((pte = walkpgdir(pgdir, (void *) i, 0)) == 0)
+
+  // walk through parent's page table
+  for(i = 0; i < sz; i += PGSIZE) {
+    if((pte = walkpgdir(pgdir, (void *)i, 0)) == 0)
       panic("copyuvm: pte should exist");
     if(!(*pte & PTE_P))
       panic("copyuvm: page not present");
+
+    // gets physical address and flags
     pa = PTE_ADDR(*pte);
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto bad;
-    memmove(mem, (char*)P2V(pa), PGSIZE);
-    if(mappages(d, (void*)i, PGSIZE, V2P(mem), flags) < 0) {
-      kfree(mem);
-      goto bad;
+
+    // handle writable pages for copy-on-write
+    if(flags & PTE_W) {
+      // remove write bit, set COW bit, update parent's PTE
+      flags &= ~PTE_W;
+      flags |= PTE_COW;
+      *pte = pa | flags;
     }
+
+    // Map the page in the child with the updated flags
+    if(mappages(d, (void*)i, PGSIZE, pa, flags) < 0)
+      goto bad;
+
+    // increment the reference count for the physical page
+    ref_counts[pa / PGSIZE]++;
   }
+
+  // flush the TLB
+  lcr3(V2P(pgdir));
+
   return d;
 
 bad:
