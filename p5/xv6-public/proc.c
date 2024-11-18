@@ -725,15 +725,16 @@ int wunmap_helper(uint addr) {
   // struct of region for easy data access
   struct wmap_region *region = &p->wmap_regions[region_index];
 
+  release(&ptable.lock);
+  
   if (!(region->flags & MAP_ANONYMOUS)) {
     struct file *f = region->file;
 
     // Validate file
     if (!f || f->type != FD_INODE || !(f->readable && f->writable)) {
-      release(&ptable.lock);
+      fileclose(f);
       return FAILED;  // Invalid file/not writable or readable
     }
-    release(&ptable.lock);
 
     // Lock inode for consistency when writing back changes
     begin_op();  // Begin file operation (this may acquire locks internally)
