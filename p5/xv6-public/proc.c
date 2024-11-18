@@ -95,8 +95,8 @@ found:
   ////////////////////////////////////////////////////////
   // Initialize wmap regions struct and wmap_count to 0 //
   ////////////////////////////////////////////////////////
-  p->wmap_count = 0;
-  memset(p->wmap_regions, 0, sizeof(p->wmap_regions));
+  /*p->wmap_count = 0;
+  memset(p->wmap_regions, 0, sizeof(p->wmap_regions));*/
 
   release(&ptable.lock);
 
@@ -224,11 +224,18 @@ fork(void)
   acquire(&ptable.lock);
 
   np->state = RUNNABLE;
-
-  // Copy memory mappings of parent to child
-  for (int i = 0; i < MAX_NUM_WMAPS; i++){
-    np->wmap_regions[i] = curproc->wmap_regions[i];
+  /*
+  for (int i = 0; i < MAX_NUM_WMAPS; i++) {
+    if (curproc->wmap_regions[i].addr && curproc->wmap_regions[i].addr != 0) {  // Ensure the mapping is valid
+      np->wmap_regions[i].addr = curproc->wmap_regions[i].addr;
+      np->wmap_regions[i].length = curproc->wmap_regions[i].length;
+      np->wmap_regions[i].flags = curproc->wmap_regions[i].flags;
+      np->wmap_regions[i].fd = curproc->wmap_regions[i].fd;
+      np->wmap_regions[i].n_loaded_pages = curproc->wmap_regions[i].n_loaded_pages;
+    }
   }
+
+  np->wmap_count = curproc->wmap_count;*/
 
   release(&ptable.lock);
 
@@ -644,10 +651,11 @@ int wmap_helper(uint addr, int length, int flags, int fd){
   return addr;
 }
 
+
 // Helper function called by kernel to check if valid memory mapping
 // Success: returns wmap region index
 // Fail: returns -1
-uint valid_memory_mapping_index(struct proc *p, uint faulting_addr){
+int valid_memory_mapping_index(struct proc *p, uint faulting_addr){
   acquire(&ptable.lock);
   // Iterate through the process's memory regions (wmap_regions)
   for (int i = 0; i < p->wmap_count; i++) {
@@ -667,6 +675,7 @@ uint valid_memory_mapping_index(struct proc *p, uint faulting_addr){
   return -1;
 }
 
+/*
 // helper function for wunmap
 // returns 0 upon success, -1 upon fail
 int wunmap_helper(uint addr) {
@@ -781,4 +790,4 @@ int getwmapinfo_helper(struct proc *p, struct wmapinfo *wminfo) {
 
   // success
   return SUCCESS;
-}
+}*/

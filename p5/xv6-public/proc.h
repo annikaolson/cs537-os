@@ -15,8 +15,6 @@ struct cpu {
 extern struct cpu cpus[NCPU];
 extern int ncpu;
 
-extern pte_t *walkpgdir(pde_t *pgdir, const void *va, int alloc);
-
 //PAGEBREAK: 17
 // Saved registers for kernel context switches.
 // Don't need to save all the segment registers (%cs, etc),
@@ -57,11 +55,10 @@ struct proc {
   int wmap_count; // Number of active regions, cannot exceed 16
 };
 
-extern uint ref_counts[];
-int wunmap_helper(uint addr);
-uint valid_memory_mapping_index(struct proc *p, uint faulting_addr);
-int wmap_helper(uint addr, int length, int flags, int fd);
-int getwmapinfo_helper(struct proc *p, struct wmapinfo *wminfo);
+//int wunmap_helper(uint addr);
+int valid_memory_mapping_index(struct proc *p, uint faulting_addr);
+/*int wmap_helper(uint addr, int length, int flags, int fd);
+int getwmapinfo_helper(struct proc *p, struct wmapinfo *wminfo);*/
 
 // Process memory is laid out contiguously, low addresses first:
 //   text

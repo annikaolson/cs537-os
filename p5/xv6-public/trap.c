@@ -9,6 +9,7 @@
 #include "spinlock.h"
 
 #define PTE_FLAGS_MASK (PTE_W | PTE_U)
+#define PTE_COW 0x200
 
 // Interrupt descriptor table (shared by all CPUs).
 struct gatedesc idt[256];
@@ -17,7 +18,8 @@ struct spinlock tickslock;
 uint ticks;
 
 // in vm.c
-extern int mappages(pde_t *pgdir, void *va, uint size, uint pa, int perm);
+static int mappages(pde_t *pgdir, void *va, uint size, uint pa, int perm);
+static pte_t* walkpgdir(pde_t *pgdir, const void *va, int alloc);
 
 void
 tvinit(void)
@@ -101,12 +103,12 @@ trap(struct trapframe *tf)
       // struct of region for easy data access
       struct wmap_region *region = &p->wmap_regions[found_index];
       uint page_addr = PGROUNDDOWN(faulting_addr); // page-aligned VA
-      pte_t *pte = pte = walkpgdir(p->pgdir, (void*)faulting_addr, 0);
+      //pte_t *pte = pte = walkpgdir(p->pgdir, (void*)faulting_addr, 0);
 
       //////////////////////////////////////////////////////////////
       // Fault caused by writing to a read-only page with PTE_COW //
       //////////////////////////////////////////////////////////////
-      if((*pte & PTE_P) && (*pte & PTE_COW)) {
+      /*if((*pte & PTE_P) && (*pte & PTE_COW)) {
         uint pa = PTE_ADDR(*pte);
 
         // alloc new page
@@ -139,7 +141,7 @@ trap(struct trapframe *tf)
       ///////////////////////////////////
       // Otherwise, WMAP related fault //
       ///////////////////////////////////
-      else {
+      else {*/
         ////////////////
         // wmap Logic //
         ////////////////
@@ -177,7 +179,7 @@ trap(struct trapframe *tf)
         }
 
         region->n_loaded_pages++; // increment num pages
-      }
+      // /}
     } 
     ////////////////////////
     // Segmentation fault //
@@ -220,4 +222,48 @@ trap(struct trapframe *tf)
   // Check if the process has been killed since we yielded
   if(myproc() && myproc()->killed && (tf->cs&3) == DPL_USER)
     exit();
+}
+
+static int
+mappages(pde_t *pgdir, void *va, uint size, uint pa, int perm)
+{
+  char *a, *last;
+  pte_t *pte;
+
+  a = (char*)PGROUNDDOWN((uint)va);
+  last = (char*)PGROUNDDOWN(((uint)va) + size - 1);
+  for(;;){
+    if((pte = walkpgdir(pgdir, a, 1)) == 0)
+      return -1;
+    if(*pte & PTE_P)
+      panic("remap");
+    *pte = pa | perm | PTE_P;
+    if(a == last)
+      break;
+    a += PGSIZE;
+    pa += PGSIZE;
+  }
+  return 0;
+}
+
+static pte_t *
+walkpgdir(pde_t *pgdir, const void *va, int alloc)
+{
+  pde_t *pde;
+  pte_t *pgtab;
+
+  pde = &pgdir[PDX(va)];
+  if(*pde & PTE_P){
+    pgtab = (pte_t*)P2V(PTE_ADDR(*pde));
+  } else {
+    if(!alloc || (pgtab = (pte_t*)kalloc()) == 0)
+      return 0;
+    // Make sure all those PTE_P bits are zero.
+    memset(pgtab, 0, PGSIZE);
+    // The permissions here are overly generous, but they can
+    // be further restricted by the permissions in the page table
+    // entries, if necessary.
+    *pde = V2P(pgtab) | PTE_P | PTE_W | PTE_U;
+  }
+  return &pgtab[PTX(va)];
 }
