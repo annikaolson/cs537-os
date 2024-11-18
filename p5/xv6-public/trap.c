@@ -7,6 +7,9 @@
 #include "x86.h"
 #include "traps.h"
 #include "spinlock.h"
+#include "sleeplock.h"
+#include "fs.h"
+#include "file.h"
 
 // Interrupt descriptor table (shared by all CPUs).
 struct gatedesc idt[256];
@@ -158,6 +161,7 @@ trap(struct trapframe *tf)
         /////////////////////////
         else { 
           // Read the page from the file
+          region->file->off = page_addr - region->addr;
           if (fileread(region->file, new_page, PAGE_SIZE) > PAGE_SIZE) {
             panic("file read");
             kfree(new_page);

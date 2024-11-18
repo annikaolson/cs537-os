@@ -130,7 +130,6 @@ sys_wmap(void){
   // Success: return the starting virtual address of the memory on success
   // Fail: return FAILED
   return wmap_helper(addr, length, flags, fd);
-  return FAILED;
 }
 
 // int wunmap(uint addr);

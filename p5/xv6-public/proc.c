@@ -639,7 +639,7 @@ int wmap_helper(uint addr, int length, int flags, int fd){
     return FAILED;
   }
 
-    /////////////////////////////////////////
+  /////////////////////////////////////////
   // Check for overlapping memory regions//
   /////////////////////////////////////////
   uint new_map_end = addr + length;
