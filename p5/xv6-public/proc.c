@@ -231,6 +231,7 @@ fork(void)
       np->wmap_regions[i].length = curproc->wmap_regions[i].length;
       np->wmap_regions[i].flags = curproc->wmap_regions[i].flags;
       np->wmap_regions[i].fd = curproc->wmap_regions[i].fd;
+      np->wmap_regions[i].file = curproc->wmap_regions[i].file;
       np->wmap_regions[i].n_loaded_pages = curproc->wmap_regions[i].n_loaded_pages;
     }
   }
@@ -562,6 +563,7 @@ procdump(void)
 int wmap_helper(uint addr, int length, int flags, int fd){
 
   struct proc *p = myproc();  // get current process
+  struct file *f = p->ofile[fd];
   
   //////////////////////////////
   // Check validity of inputs //
@@ -597,7 +599,6 @@ int wmap_helper(uint addr, int length, int flags, int fd){
     }
 
     // retrieve file pointer
-    struct file *f = p->ofile[fd];
     if (!f) {
       return FAILED;  // file not open
     }
@@ -607,9 +608,17 @@ int wmap_helper(uint addr, int length, int flags, int fd){
       return FAILED;
     }
 
+    // make sure file is of type INODE
+    if (f->type != FD_INODE) {
+      return FAILED;
+    }
+
+    filedup(f);
+
     ilock(f->ip);
     if (length > f->ip->size) {
       iunlock(f->ip);
+      fileclose(f);
       return FAILED;  // Mapping length exceeds file size
     }
     iunlock(f->ip);  // Unlock the inode
@@ -659,6 +668,7 @@ int wmap_helper(uint addr, int length, int flags, int fd){
   region->length = length;
   region->flags = flags;
   region->fd = fd;
+  region->file = f;
   p->wmap_count++;
 
   release(&ptable.lock);
@@ -748,6 +758,12 @@ int wunmap_helper(uint addr) {
   for (int i = region_index; i < p->wmap_count - 1; i++) {
     p->wmap_regions[i] = p->wmap_regions[i + 1];
   }
+
+  p->wmap_regions[p->wmap_count-1].addr = 0;
+  p->wmap_regions[p->wmap_count-1].length = 0;
+  p->wmap_regions[p->wmap_count-1].flags = 0;
+  p->wmap_regions[p->wmap_count-1].fd = 0;
+  p->wmap_regions[p->wmap_count-1].n_loaded_pages = 0;
   p->wmap_count--;
 
   // remove mapping from page table
@@ -764,8 +780,8 @@ int wunmap_helper(uint addr) {
 
       if (*pte & PTE_P) {  // Check if the page table entry is valid and page is present in memory
         uint physical_addr = PTE_ADDR(*pte);  // Get physical address from the PTE
-        *pte = 0;  // Clear the PTE (unmap the page)
         kfree(P2V(physical_addr));  // Free the physical page mapped to this virtual address
+        *pte = 0;  // Clear the PTE (unmap the page)
       }
     }
   }

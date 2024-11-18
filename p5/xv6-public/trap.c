@@ -124,7 +124,7 @@ trap(struct trapframe *tf)
         // decrement reference count
         decrement_ref_count(pa);
         
-        if(get_ref_count(pa) == 0) {
+        if((uint)get_ref_count(pa) == 0) {
           // if no other process using this page, free it
           kfree((char*)P2V(pa));
         }
@@ -158,7 +158,8 @@ trap(struct trapframe *tf)
         /////////////////////////
         else { 
           // Read the page from the file
-          if (fileread(p->ofile[region->fd], new_page, PAGE_SIZE) != PAGE_SIZE) {
+          if (fileread(region->file, new_page, PAGE_SIZE) > PAGE_SIZE) {
+            panic("file read");
             kfree(new_page);
             p->killed = 1;
             break;
@@ -167,6 +168,7 @@ trap(struct trapframe *tf)
 
         // Map the populated page to the faulting address
         if (mappages(p->pgdir, (void*)page_addr, PAGE_SIZE, V2P(new_page), PTE_W | PTE_U) < 0) {
+          panic("mappages");
           kfree(new_page);
           p->killed = 1;
           break;
