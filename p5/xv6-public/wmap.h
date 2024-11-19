@@ -26,6 +26,10 @@ struct wmapinfo {
 // ADDED CODE //
 ////////////////
 
+#define PHYSTOP 0xE000000  // Top of physical memory
+#define PGSIZE 4096        // Page size
+#define REF_COUNT_SIZE (PHYSTOP / PGSIZE)  // One byte per page
+
 // Define constants
 #define PAGE_SIZE 4096
 #define MAX_NUM_WMAPS 16

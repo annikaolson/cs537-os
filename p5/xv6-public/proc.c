@@ -198,6 +198,47 @@ fork(void)
     return -1;
   }
 
+  /*
+  // copy the process size
+  np->sz = curproc->sz;
+
+  // allocate and set up a page directory for the child process
+  if ((np->pgdir = setupkvm()) == 0) {
+    kfree(np->kstack);
+    np->kstack = 0;
+    np->state = UNUSED;
+    return -1;
+  }
+
+  // copy parent's page table and mark shared pages as COW
+  for (uint va = 0; va < curproc->sz; va += PGSIZE) {
+    pte_t *pte = walkpgdir(curproc->pgdir, (void *)va, 0);  // pte of parent
+    if (!pte || !(*pte & PTE_P)) {
+      continue; // unmapped page, skip
+    }
+
+    // get pa and flags of parent from pte
+    uint pa = PTE_ADDR(*pte);
+    uint flags = PTE_FLAGS(*pte);
+
+    // mark writable pages as COW
+    if (flags & PTE_W) {
+      flags &= ~PTE_W;    // remove write permission
+      flags |= PTE_COW;   // add COW flag
+      *pte = pa | flags;  // update parent's pte
+    }
+
+    // maps same physical page in child's page table
+    if (mappages(np->pgdir, (void *)va, PGSIZE, pa, flags) < 0) {
+      freevm(np->pgdir);
+      np->state = UNUSED;
+      return -1;
+    }
+
+    increment_ref_count(pa);
+
+  }*/
+
   // Copy process state from proc.
   if((np->pgdir = copyuvm(curproc->pgdir, curproc->sz)) == 0){
     kfree(np->kstack);
@@ -208,6 +249,26 @@ fork(void)
   np->sz = curproc->sz;
   np->parent = curproc;
   *np->tf = *curproc->tf;
+
+  // Mark the parent’s pages as read-only in both parent and child page tables
+    // so we can trigger a page fault on write
+    for(i = 0; i < curproc->sz; i += PGSIZE){
+        pte_t *pte = walkpgdir(np->pgdir, (void*)i, 0);
+        if (pte && (*pte & PTE_P)) {
+            // Mark the page as read-only (COW)
+            *pte &= ~PTE_W;  // remove write access
+            *pte |= PTE_COW; // set COW flag
+            // Increment reference count for the shared page (if COW)
+            increment_ref_count(PTE_ADDR(*pte));
+        }
+    }
+
+    // Set up the kernel stack for the child process
+    if((np->kstack = kalloc()) == 0) {
+        freevm(np->pgdir);
+        kfree(np->kstack);
+        return -1;
+    }
 
   // Clear %eax so that fork returns 0 in the child.
   np->tf->eax = 0;
@@ -224,19 +285,6 @@ fork(void)
   acquire(&ptable.lock);
 
   np->state = RUNNABLE;
-  
-  for (int i = 0; i < MAX_NUM_WMAPS; i++) {
-    if (curproc->wmap_regions[i].addr && curproc->wmap_regions[i].addr != 0) {  // Ensure the mapping is valid
-      np->wmap_regions[i].addr = curproc->wmap_regions[i].addr;
-      np->wmap_regions[i].length = curproc->wmap_regions[i].length;
-      np->wmap_regions[i].flags = curproc->wmap_regions[i].flags;
-      np->wmap_regions[i].fd = curproc->wmap_regions[i].fd;
-      np->wmap_regions[i].file = curproc->wmap_regions[i].file;
-      np->wmap_regions[i].n_loaded_pages = curproc->wmap_regions[i].n_loaded_pages;
-    }
-  }
-
-  np->wmap_count = curproc->wmap_count;
 
   release(&ptable.lock);
 

@@ -105,35 +105,34 @@ trap(struct trapframe *tf)
       // Fault caused by writing to a read-only page with PTE_COW //
       //////////////////////////////////////////////////////////////
       if((*pte & PTE_P) && (*pte & PTE_COW)) {
-        uint pa = PTE_ADDR(*pte);
-
-        // alloc new page
+        // Allocate a new page for the child
         char *new_page = kalloc();
-        if (!new_page) {  // allocation failed
-          p->killed = 1;
-          break;
+        if (!new_page) {
+            p->killed = 1;
+            break;
         }
 
-        // copy old page to new page
-        memmove(new_page, (char*)P2V(pa), PGSIZE);
+        // Copy the original page to the new page
+        memmove(new_page, (char*)P2V(PTE_ADDR(*pte)), PGSIZE);
 
-        // mark new page as writable
-        if(mappages(p->pgdir, (void*)faulting_addr, PGSIZE, V2P(new_page), PTE_W | PTE_U) < 0){
-          kfree(new_page);
-          p->killed = 1;
-          break;
+        // Mark the new page as writable
+        *pte = PTE_ADDR(*pte) | PTE_W | PTE_U | PTE_P;
+
+        // Update the page table to point to the new page
+        if (mappages(p->pgdir, (void*)faulting_addr, PGSIZE, V2P(new_page), PTE_W | PTE_U) < 0) {
+            kfree(new_page);
+            p->killed = 1;
+            break;
         }
 
-        // decrement reference count
-        decrement_ref_count(pa);
+        // Decrement reference count for the old page
+        decrement_ref_count(PTE_ADDR(*pte));
         
-        if((uint)get_ref_count(pa) == 0) {
-          // if no other process using this page, free it
-          kfree((char*)P2V(pa));
-        }
+        // Set the new page’s reference count
+        increment_ref_count(V2P(new_page));
 
-        // update page table entry to point to the new writable page
-        *pte = V2P(new_page) | PTE_U | PTE_W | PTE_P;  // Mark as writable
+        // Reload the CR3 register to flush the TLB and ensure changes to the page table are reflected
+        lcr3(V2P(p->pgdir));  // Load the page directory into the CR3 register
       } 
       ///////////////////////////////////
       // Otherwise, WMAP related fault //

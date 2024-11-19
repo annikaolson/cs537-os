@@ -325,33 +325,57 @@ clearpteu(pde_t *pgdir, char *uva)
 pde_t*
 copyuvm(pde_t *pgdir, uint sz)
 {
-  pde_t *d;
-  pte_t *pte;
-  uint pa, i, flags;
-  char *mem;
+    pde_t *d;
+    pte_t *pte;
+    uint pa, i, flags;
+    char *mem;
 
-  if((d = setupkvm()) == 0)
-    return 0;
-  for(i = 0; i < sz; i += PGSIZE){
-    if((pte = walkpgdir(pgdir, (void *) i, 0)) == 0)
-      panic("copyuvm: pte should exist");
-    if(!(*pte & PTE_P))
-      panic("copyuvm: page not present");
-    pa = PTE_ADDR(*pte);
-    flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto bad;
-    memmove(mem, (char*)P2V(pa), PGSIZE);
-    if(mappages(d, (void*)i, PGSIZE, V2P(mem), flags) < 0) {
-      kfree(mem);
-      goto bad;
+    if((d = setupkvm()) == 0)
+        return 0;
+    
+    for(i = 0; i < sz; i += PGSIZE){
+        if((pte = walkpgdir(pgdir, (void *) i, 0)) == 0)
+            panic("copyuvm: pte should exist");
+        
+        if(!(*pte & PTE_P))
+            panic("copyuvm: page not present");
+        
+        pa = PTE_ADDR(*pte);
+        flags = PTE_FLAGS(*pte);
+
+        // If the page is marked for COW, we handle it as shared memory
+        if (flags & PTE_COW) {
+            // Increment the reference count for shared pages
+            increment_ref_count(pa);
+            
+            // Mark the page as read-only for both parent and child
+            flags &= ~PTE_W;  // Remove write permission
+            flags |= PTE_COW; // Ensure that it's still marked as COW
+            
+            // Map the same physical page into the child’s address space
+            if(mappages(d, (void*)i, PGSIZE, pa, flags) < 0)
+                goto bad;
+        } else {
+            // If the page is not shared, we allocate a new page for the child
+            if((mem = kalloc()) == 0)
+                goto bad;
+            
+            // Copy the contents of the parent page to the new page
+            memmove(mem, (char*)P2V(pa), PGSIZE);
+            
+            // Map the new page into the child’s address space
+            if(mappages(d, (void*)i, PGSIZE, V2P(mem), flags) < 0) {
+                kfree(mem);
+                goto bad;
+            }
+        }
     }
-  }
-  return d;
+    
+    return d;
 
 bad:
-  freevm(d);
-  return 0;
+    freevm(d);
+    return 0;
 }
 
 //PAGEBREAK!

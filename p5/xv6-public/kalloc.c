@@ -59,22 +59,32 @@ freerange(void *vstart, void *vend)
 void
 kfree(char *v)
 {
-  struct run *r;
+    struct run *r;
+    uint pa = V2P(v);
 
-  if((uint)v % PGSIZE || v < end || V2P(v) >= PHYSTOP)
-    panic("kfree");
+    if((uint)v % PGSIZE || v < end || pa >= PHYSTOP)
+        panic("kfree");
 
-  // Fill with junk to catch dangling refs.
-  memset(v, 1, PGSIZE);
+    // Decrement the reference count before freeing the page
+    decrement_ref_count(pa);
 
-  if(kmem.use_lock)
-    acquire(&kmem.lock);
-  r = (struct run*)v;
-  r->next = kmem.freelist;
-  kmem.freelist = r;
-  if(kmem.use_lock)
-    release(&kmem.lock);
+    // Only free the page when the reference count reaches 0
+    if (get_ref_count(pa) == 0) {
+        // Fill with junk to catch dangling references
+        memset(v, 1, PGSIZE);
+
+        if(kmem.use_lock)
+            acquire(&kmem.lock);
+        
+        r = (struct run*)v;
+        r->next = kmem.freelist;
+        kmem.freelist = r;
+
+        if(kmem.use_lock)
+            release(&kmem.lock);
+    }
 }
+
 
 // Allocate one 4096-byte page of physical memory.
 // Returns a pointer that the kernel can use.
