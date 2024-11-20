@@ -213,15 +213,10 @@ fork(void)
   // Clear %eax so that fork returns 0 in the child.
   np->tf->eax = 0;
 
-  // Copy file descriptors.
-  for (i = 0; i < NOFILE; i++) {
-    if (curproc->ofile[i]) {
-      np->ofile[i] = filedup(curproc->ofile[i]);
-    }
-  }
   np->cwd = idup(curproc->cwd);
   safestrcpy(np->name, curproc->name, sizeof(curproc->name));
 
+  acquire(&ptable.lock);
   // Handle memory mappings (COW setup for writable pages).
   for (i = 0; i < MAX_NUM_WMAPS; i++) {
     if (curproc->wmap_regions[i].addr > 0) { // Ensure the mapping is valid
@@ -241,29 +236,33 @@ fork(void)
         uint flags = PTE_FLAGS(*pte);
 
         // Handle COW for writable pages
-        if (flags & PTE_W) {
+        if (flags & PTE_W || flags & PTE_COW) {
           // Mark parent as COW
-          *pte = pa | (flags & ~PTE_W) | PTE_COW | PTE_P;
+          *pte = pa | (flags & ~PTE_W) | PTE_COW | PTE_P | PTE_U;
 
           // Use mappages to map the page in the child process's page table
-          if (mappages(np->pgdir, (void *)addr, PGSIZE, pa, PTE_P | PTE_U | PTE_COW) < 0)
-            goto bad;
+          mappages(np->pgdir, (void *)addr, PGSIZE, pa, PTE_P | PTE_U | PTE_COW);
 
           incr_refcount(pa); // Increment reference count for shared page
-          lcr3(V2P(np->pgdir));
         } else {
           // Normal copy using mappages
-          if (mappages(np->pgdir, (void *)addr, PGSIZE, pa, PTE_P | PTE_U) < 0)
-            goto bad;
-          lcr3(V2P(np->pgdir));
+          mappages(np->pgdir, (void *)addr, PGSIZE, pa, PTE_P | PTE_U);
         }
       }
-      // Flush TLB once after all mappings are done.
     }
   }
 
   // Copy memory map metadata.
   np->wmap_count = curproc->wmap_count;
+  release(&ptable.lock);
+
+    // Clear %eax so that fork returns 0 in the child.
+  np->tf->eax = 0;
+
+  for(i = 0; i < NOFILE; i++)
+    if(curproc->ofile[i])
+      np->ofile[i] = filedup(curproc->ofile[i]);
+  np->cwd = idup(curproc->cwd);
 
   pid = np->pid;
 
@@ -273,13 +272,6 @@ fork(void)
   release(&ptable.lock);
 
   return pid;
-
-bad:
-  freevm(np->pgdir);
-  kfree(np->kstack);
-  np->kstack = 0;
-  np->state = UNUSED;
-  return -1;
 }
 
 // Exit the current process.  Does not return.

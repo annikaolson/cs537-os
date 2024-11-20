@@ -96,7 +96,7 @@ trap(struct trapframe *tf)
     uint found_index = valid_memory_mapping_index(p, faulting_addr);
     pte_t *pte = walkpgdir(p->pgdir, (void*)faulting_addr, 0);
     uint pa = PTE_ADDR(*pte);
-    if(*pte & PTE_COW && *pte & PTE_P) {
+    if(*pte & !PTE_W && *pte & PTE_COW && *pte & PTE_P) {
       cprintf("trap: page fault at address 0x%x\n", rcr2());
       // decrement reference count
       dec_refcount(pa);
