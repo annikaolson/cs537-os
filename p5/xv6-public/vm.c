@@ -71,6 +71,7 @@ mappages(pde_t *pgdir, void *va, uint size, uint pa, int perm)
     if(*pte & PTE_P)
       panic("remap");
     *pte = pa | perm | PTE_P;
+    incr_refcount(pa);
     if(a == last)
       break;
     a += PGSIZE;
@@ -345,8 +346,6 @@ copyuvm(pde_t *pgdir, uint sz)
       if(mappages(d, (void*)i, PGSIZE, pa, flags) < 0) {
         goto bad;
       }
-      // Increment reference count
-      incr_refcount(pa);
     }
     else {
       if(mappages(d, (void*)i, PGSIZE, pa, flags) < 0) {

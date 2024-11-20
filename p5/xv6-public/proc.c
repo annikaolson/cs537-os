@@ -234,8 +234,6 @@ fork(void)
         uint pa = PTE_ADDR(*pte);
         // Normal copy using mappages
         mappages(np->pgdir, (void *)addr, PGSIZE, pa, PTE_W | PTE_P | PTE_U);
-        // Increment reference count
-        incr_refcount(pa);
       }
     }
   }

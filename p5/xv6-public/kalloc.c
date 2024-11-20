@@ -23,47 +23,49 @@ struct {
   struct run *freelist;
 } kmem;
 
-char ref_count[PFN_MAX]; // Reference count array
-struct spinlock ref_count_lock;      // Lock for managing concurrent access
+char ref_count[PFN_MAX];
+struct spinlock ref_count_lock;
 
 // Initialize the reference count array
 void init_refcount() {
-  initlock(&ref_count_lock, "ref_count_lock");  // Initialize the lock for thread-safety
+  initlock(&ref_count_lock, "ref_count_lock");
   for (int i = 0; i < PFN_MAX; i++) {
-    ref_count[i] = 1;  // Initialize all reference counts to 1
+    ref_count[i] = 0;
   }
 }
 
 // Increment the reference count for a physical page
 void incr_refcount(uint paddr) {
-  int page_idx = paddr / PGSIZE;  // Calculate the page index from the physical address
-  if (page_idx < PFN_MAX) {
-    acquire(&ref_count_lock);  // Acquire the lock before modifying ref_count
-    ref_count[page_idx]++;  // Increment the reference count for the page
-    release(&ref_count_lock);  // Release the lock after modification
+  // Only increment if after kinit2
+  if(kmem.use_lock){
+    int page_idx = paddr / PGSIZE;
+    if (page_idx < PFN_MAX) {
+      acquire(&ref_count_lock);
+      ref_count[page_idx]++;
+      release(&ref_count_lock);
+    }
   }
 }
 
 // Decrement the reference count for a physical page
 void dec_refcount(uint paddr) {
-  int page_idx = paddr / PGSIZE;  // Calculate the page index from the physical address
+  int page_idx = paddr / PGSIZE;
   if (page_idx < PFN_MAX) {
-    acquire(&ref_count_lock);  // Acquire the lock before modifying ref_count
+    acquire(&ref_count_lock);
     if (ref_count[page_idx] > 0) {
-        ref_count[page_idx]--;  // Decrement the reference count for the page
+        ref_count[page_idx]--;
     }
-    // Optionally, if the reference count reaches 0, free the page (not shown here)
-    release(&ref_count_lock);  // Release the lock after modification
+    release(&ref_count_lock);
   }
 }
 
 // Function to get the reference count for a specific physical page
 int get_refcount(uint paddr) {
-  int page_idx = paddr / PGSIZE;  // Calculate the page index from the physical address
+  int page_idx = paddr / PGSIZE;
   if (page_idx < PFN_MAX) {
-    return ref_count[page_idx];  // Return the reference count if valid
+    return ref_count[page_idx];
   }
-  return -1;  // Return 0 if the page index is out of bounds
+  return -1;
 }
 
 // Initialization happens in two phases.

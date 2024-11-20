@@ -171,8 +171,6 @@ trap(struct trapframe *tf)
     // Segmentation fault //
     ////////////////////////
     else {
-        cprintf("Segmentation Fault at physical address: 0x%x\n", pa);
-        cprintf("Segmentation Fault Flags: %x\n", flags);
         cprintf("Segmentation Fault\n");
         // kill the process
         myproc()->killed = 1;
