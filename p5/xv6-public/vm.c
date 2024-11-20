@@ -326,7 +326,6 @@ copyuvm(pde_t *pgdir, uint sz)
   pde_t *d;
   pte_t *pte;
   uint pa, i, flags;
-  char *mem;
 
   if((d = setupkvm()) == 0)
     return 0;
@@ -337,13 +336,22 @@ copyuvm(pde_t *pgdir, uint sz)
       panic("copyuvm: page not present");
     pa = PTE_ADDR(*pte);
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto bad;
-    memmove(mem, (char*)P2V(pa), PGSIZE);
-    // TODO: IMPLEMENT COW LOGIC HERE??
-    if(mappages(d, (void*)i, PGSIZE, V2P(mem), flags) < 0) {
-      kfree(mem);
-      goto bad;
+    if (flags & PTE_W){
+      flags &= !PTE_W;
+      flags |= PTE_COW;
+
+      // Update parent flags, undo write, assert cow
+      *pte = pa | flags | PTE_P | PTE_U; 
+      if(mappages(d, (void*)i, PGSIZE, V2P(pa), flags) < 0) {
+        kfree(P2V(pa));
+        goto bad;
+      }
+    }
+    else {
+      if(mappages(d, (void*)i, PGSIZE, V2P(pa), flags | PTE_P | PTE_U) < 0) {
+        kfree(P2V(pa));
+        goto bad;
+      }
     }
   }
   return d;
