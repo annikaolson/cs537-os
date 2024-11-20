@@ -96,9 +96,10 @@ trap(struct trapframe *tf)
     uint found_index = valid_memory_mapping_index(p, faulting_addr);
     pte_t *pte = walkpgdir(p->pgdir, (void*)faulting_addr, 0);
     uint pa = PTE_ADDR(*pte);
+    uint flags = PTE_FLAGS(*pte);
 
     // Copy on write fault
-    if(*pte & PTE_COW && *pte & PTE_P) {
+    if(flags & PTE_COW && flags & PTE_P) {
       // alloc new page to copy the old page to
       char *new_page = kalloc();
       if (!new_page) {  // allocation failed
@@ -170,7 +171,8 @@ trap(struct trapframe *tf)
     // Segmentation fault //
     ////////////////////////
     else {
-        cprintf("Segmentation Fault at address: 0x%x\n", faulting_addr);
+        cprintf("Segmentation Fault at physical address: 0x%x\n", pa);
+        cprintf("Segmentation Fault Flags: %x\n", flags);
         cprintf("Segmentation Fault\n");
         // kill the process
         myproc()->killed = 1;

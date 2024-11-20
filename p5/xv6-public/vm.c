@@ -201,7 +201,7 @@ loaduvm(pde_t *pgdir, char *addr, struct inode *ip, uint offset, uint sz, uint e
   pte_t *pte;
 
   // Translate ELF flags to PTE flags
-  int pte_flags = PTE_P | PTE_U; // Pages are present and user-accessible by default
+  uint pte_flags = PTE_P | PTE_U; // Pages are present and user-accessible by default
   if (elf_flags & ELF_PROG_FLAG_WRITE)
     pte_flags |= PTE_W;
 
@@ -336,20 +336,20 @@ copyuvm(pde_t *pgdir, uint sz)
       panic("copyuvm: page not present");
     pa = PTE_ADDR(*pte);
     flags = PTE_FLAGS(*pte);
-    if (flags & PTE_W){
-      flags &= !PTE_W;
+    if (flags & PTE_W || flags & PTE_COW){
+      flags &= ~PTE_W;
       flags |= PTE_COW;
 
       // Update parent flags, undo write, assert cow
-      *pte = pa | flags | PTE_P | PTE_U; 
-      if(mappages(d, (void*)i, PGSIZE, V2P(pa), flags) < 0) {
-        kfree(P2V(pa));
+      *pte = pa | flags;
+      if(mappages(d, (void*)i, PGSIZE, pa, flags) < 0) {
         goto bad;
       }
+      // Increment reference count
+      incr_refcount(pa);
     }
     else {
-      if(mappages(d, (void*)i, PGSIZE, V2P(pa), flags | PTE_P | PTE_U) < 0) {
-        kfree(P2V(pa));
+      if(mappages(d, (void*)i, PGSIZE, pa, flags) < 0) {
         goto bad;
       }
     }

@@ -30,7 +30,7 @@ struct spinlock ref_count_lock;      // Lock for managing concurrent access
 void init_refcount() {
   initlock(&ref_count_lock, "ref_count_lock");  // Initialize the lock for thread-safety
   for (int i = 0; i < PFN_MAX; i++) {
-    ref_count[i] = 0;  // Initialize all reference counts to 0
+    ref_count[i] = 1;  // Initialize all reference counts to 1
   }
 }
 
@@ -38,9 +38,9 @@ void init_refcount() {
 void incr_refcount(uint paddr) {
   int page_idx = paddr / PGSIZE;  // Calculate the page index from the physical address
   if (page_idx < PFN_MAX) {
-    //acquire(&ref_count_lock);  // Acquire the lock before modifying ref_count
+    acquire(&ref_count_lock);  // Acquire the lock before modifying ref_count
     ref_count[page_idx]++;  // Increment the reference count for the page
-    //release(&ref_count_lock);  // Release the lock after modification
+    release(&ref_count_lock);  // Release the lock after modification
   }
 }
 
@@ -48,12 +48,12 @@ void incr_refcount(uint paddr) {
 void dec_refcount(uint paddr) {
   int page_idx = paddr / PGSIZE;  // Calculate the page index from the physical address
   if (page_idx < PFN_MAX) {
-    //acquire(&ref_count_lock);  // Acquire the lock before modifying ref_count
+    acquire(&ref_count_lock);  // Acquire the lock before modifying ref_count
     if (ref_count[page_idx] > 0) {
         ref_count[page_idx]--;  // Decrement the reference count for the page
     }
     // Optionally, if the reference count reaches 0, free the page (not shown here)
-    //release(&ref_count_lock);  // Release the lock after modification
+    release(&ref_count_lock);  // Release the lock after modification
   }
 }
 
@@ -110,12 +110,13 @@ kfree(char *v)
     panic("kfree");
 
 
-  if(kmem.use_lock)
+  if(kmem.use_lock){
+    // Decrement the reference amount
+    dec_refcount(pa);
+    
     // Acquire the lock
     acquire(&kmem.lock);
-
-  // Decrement the reference amount
-  dec_refcount(pa);
+  }
 
   // Only free the page when the reference count reaches 0
   if (get_refcount(pa) == 0){
@@ -142,7 +143,6 @@ kalloc(void)
   r = kmem.freelist;
   if(r)
     kmem.freelist = r->next;
-  incr_refcount((uint)r);
   if(kmem.use_lock)
     release(&kmem.lock);
   return (char*)r;

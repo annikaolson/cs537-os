@@ -234,6 +234,8 @@ fork(void)
         uint pa = PTE_ADDR(*pte);
         // Normal copy using mappages
         mappages(np->pgdir, (void *)addr, PGSIZE, pa, PTE_W | PTE_P | PTE_U);
+        // Increment reference count
+        incr_refcount(pa);
       }
     }
   }
@@ -242,7 +244,6 @@ fork(void)
   np->wmap_count = curproc->wmap_count;
   release(&ptable.lock);
   // Flush the TLB
-  lcr3(V2P(np->pgdir));
   lcr3(V2P(curproc->pgdir));
 
   // Clear %eax so that fork returns 0 in the child.
