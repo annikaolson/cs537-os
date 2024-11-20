@@ -194,20 +194,55 @@ fork(void)
   struct proc *curproc = myproc();
 
   // Allocate process.
-  if((np = allocproc()) == 0){
+  if ((np = allocproc()) == 0) {
     return -1;
   }
 
-  // Copy process state from proc.
-  if((np->pgdir = copyuvm(curproc->pgdir, curproc->sz)) == 0){
+  // Copy process state from the parent process.
+  if ((np->pgdir = copyuvm(curproc->pgdir, curproc->sz)) == 0) {
     kfree(np->kstack);
     np->kstack = 0;
     np->state = UNUSED;
     return -1;
   }
+
   np->sz = curproc->sz;
   np->parent = curproc;
   *np->tf = *curproc->tf;
+
+  // Clear %eax so that fork returns 0 in the child.
+  np->tf->eax = 0;
+
+  np->cwd = idup(curproc->cwd);
+  safestrcpy(np->name, curproc->name, sizeof(curproc->name));
+
+  acquire(&ptable.lock);
+  // Handle memory mappings (COW setup for writable pages).
+  for (i = 0; i < MAX_NUM_WMAPS; i++) {
+    if (curproc->wmap_regions[i].addr > 0) { // Ensure the mapping is valid
+      struct wmap_region *parent_region = &curproc->wmap_regions[i];
+      struct wmap_region *child_region = &np->wmap_regions[i];
+
+      // Copy metadata.
+      *child_region = *parent_region;
+
+      uint start = parent_region->addr;
+      uint end = start + parent_region->length;
+
+      for (uint addr = start; addr < end; addr += PAGE_SIZE) {
+        pte_t *pte = walkpgdir(curproc->pgdir, (void *)addr, 0);
+        uint pa = PTE_ADDR(*pte);
+        // Normal copy using mappages
+        mappages(np->pgdir, (void *)addr, PGSIZE, pa, PTE_W | PTE_P | PTE_U);
+      }
+    }
+  }
+
+  // Copy memory map metadata.
+  np->wmap_count = curproc->wmap_count;
+  release(&ptable.lock);
+  // Flush the TLB
+  lcr3(V2P(curproc->pgdir));
 
   // Clear %eax so that fork returns 0 in the child.
   np->tf->eax = 0;
@@ -217,27 +252,11 @@ fork(void)
       np->ofile[i] = filedup(curproc->ofile[i]);
   np->cwd = idup(curproc->cwd);
 
-  safestrcpy(np->name, curproc->name, sizeof(curproc->name));
-
   pid = np->pid;
 
+  // Set child process as runnable.
   acquire(&ptable.lock);
-
   np->state = RUNNABLE;
-  
-  for (int i = 0; i < MAX_NUM_WMAPS; i++) {
-    if (curproc->wmap_regions[i].addr && curproc->wmap_regions[i].addr != 0) {  // Ensure the mapping is valid
-      np->wmap_regions[i].addr = curproc->wmap_regions[i].addr;
-      np->wmap_regions[i].length = curproc->wmap_regions[i].length;
-      np->wmap_regions[i].flags = curproc->wmap_regions[i].flags;
-      np->wmap_regions[i].fd = curproc->wmap_regions[i].fd;
-      np->wmap_regions[i].file = curproc->wmap_regions[i].file;
-      np->wmap_regions[i].n_loaded_pages = curproc->wmap_regions[i].n_loaded_pages;
-    }
-  }
-
-  np->wmap_count = curproc->wmap_count;
-
   release(&ptable.lock);
 
   return pid;
@@ -255,6 +274,16 @@ exit(void)
 
   if(curproc == initproc)
     panic("init exiting");
+
+  ///////////////////////////////////
+  // Unmap wmap regions (clean up) //
+  ///////////////////////////////////
+  for (int i = 0; i < MAX_NUM_WMAPS; i++) {
+    struct wmap_region *region = &curproc->wmap_regions[i];
+    if (region->addr > 0){
+      wunmap_helper(region->addr);
+    }
+  }
 
   // Close all open files.
   for(fd = 0; fd < NOFILE; fd++){
@@ -613,15 +642,32 @@ int wmap_helper(uint addr, int length, int flags, int fd){
       return FAILED;
     }
 
-    filedup(f);
-
+    begin_op();
     ilock(f->ip);
     if (length > f->ip->size) {
       iunlock(f->ip);
+      end_op();
       fileclose(f);
       return FAILED;  // Mapping length exceeds file size
     }
     iunlock(f->ip);  // Unlock the inode
+    end_op();
+
+    // Find an available slot in the child's ofile array
+    int new_fd;
+    for (new_fd = 0; new_fd < NOFILE; new_fd++) {
+      if (p->ofile[new_fd] == 0) {
+        break;  // Found an empty slot
+      }
+    }
+
+    // Check if we were able to find an empty slot
+    if (new_fd == NOFILE) {
+      return FAILED;  // No available file descriptors
+    }
+
+    // Assign the duplicated file to the new file descriptor slot
+    p->ofile[new_fd] = filedup(f);;
 
   } else {  // anonymous, no file-backed mapping
     fd = -1;  // ignore fd
@@ -708,31 +754,29 @@ int wunmap_helper(uint addr) {
   int region_index = -1;
 
   acquire(&ptable.lock);
-  // find mapping starting at addr
+  // Find mapping starting at addr
   for (int i = 0; i < p->wmap_count; i++) {
     if (p->wmap_regions[i].addr == addr) {
-      region_index = i; // found region to unmap
+      region_index = i; // Found region to unmap
       break;
     }
   }
 
-  // no mapping found
+  // No mapping found
   if (region_index == -1) {
     release(&ptable.lock);
     return FAILED;
   }
 
-  // struct of region for easy data access
+  // Struct of region for easy data access
   struct wmap_region *region = &p->wmap_regions[region_index];
-
   release(&ptable.lock);
 
   if (!(region->flags & MAP_ANONYMOUS)) {
     struct file *f = region->file;
 
-    // Validate file
+    // Validate file (check if file is valid and open)
     if (!f || f->type != FD_INODE || !(f->readable && f->writable)) {
-      fileclose(f);
       return FAILED;  // Invalid file/not writable or readable
     }
 
@@ -749,19 +793,17 @@ int wunmap_helper(uint addr) {
         if (writei(f->ip, mem, va - region->addr, PAGE_SIZE) > PAGE_SIZE) {
           iunlock(f->ip);  // Unlock inode if the write fails
           end_op();  // End the operation (release file system locks)
-          fileclose(f);
           return FAILED;
         }
         iunlock(f->ip);
         end_op();
       }
     }
-    fileclose(f);  // Close file after operation
   }
 
   acquire(&ptable.lock);
 
-  // remove mapping from page table
+  // Remove mapping from page table
   for (uint curr_addr = region->addr; curr_addr < region->addr + region->length; curr_addr += PAGE_SIZE) {
     // Calculate the page directory index and page table index
     uint pdx = PDX(curr_addr);
@@ -773,15 +815,15 @@ int wunmap_helper(uint addr) {
       pte_t *pt = (pte_t*)P2V(PTE_ADDR(*pde));  // Get the physical address of the page table
       pte_t *pte = &pt[ptx];  // Get the page table entry for the address
 
-      if (*pte & PTE_P) {  // Check if the page table entry is valid and page is present in memory
+      if (*pte & PTE_P && get_refcount(PTE_ADDR(pte)) == 0) {  // Check if the page table entry is valid and page is present in memory
         uint physical_addr = PTE_ADDR(*pte);  // Get physical address from the PTE
-        kfree(P2V(physical_addr));  // Free the physical page mapped to this virtual address
+        kfree(P2V(physical_addr));  // "Free" the physical page
       }
       *pte = 0;  // Clear the PTE (unmap the page)
     }
   }
 
-  // remove mapping from proc's memory regions
+  // Remove mapping from proc's memory regions
   for (int i = region_index; i < p->wmap_count - 1; i++) {
     p->wmap_regions[i] = p->wmap_regions[i + 1];
   }
@@ -794,12 +836,10 @@ int wunmap_helper(uint addr) {
   p->wmap_regions[p->wmap_count-1].n_loaded_pages = 0;
   p->wmap_count--;
 
-  lcr3(V2P(p->pgdir));
-
   release(&ptable.lock);
   return SUCCESS;
-
 }
+
 
 int getwmapinfo_helper(struct proc *p, struct wmapinfo *wminfo) {
   // initialize wminfo struct
