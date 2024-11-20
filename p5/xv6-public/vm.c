@@ -9,7 +9,6 @@
 
 extern char data[];  // defined by kernel.ld
 pde_t *kpgdir;  // for use in scheduler()
-static uchar ref_count[PFN_MAX] = {0};
 
 // Set up CPU's kernel segment descriptors.
 // Run once on entry on each CPU.
@@ -196,10 +195,15 @@ inituvm(pde_t *pgdir, char *init, uint sz)
 // Load a program segment into pgdir.  addr must be page-aligned
 // and the pages from addr to addr+sz must already be mapped.
 int
-loaduvm(pde_t *pgdir, char *addr, struct inode *ip, uint offset, uint sz, uint flags)
+loaduvm(pde_t *pgdir, char *addr, struct inode *ip, uint offset, uint sz, uint elf_flags)
 {
   uint i, pa, n;
   pte_t *pte;
+
+  // Translate ELF flags to PTE flags
+  int pte_flags = PTE_P | PTE_U; // Pages are present and user-accessible by default
+  if (elf_flags & ELF_PROG_FLAG_WRITE)
+    pte_flags |= PTE_W;
 
   if((uint) addr % PGSIZE != 0)
     panic("loaduvm: addr must be page aligned");
@@ -214,14 +218,8 @@ loaduvm(pde_t *pgdir, char *addr, struct inode *ip, uint offset, uint sz, uint f
     if(readi(ip, P2V(pa), offset+i, n) != n)
       return -1;
 
-    // set permissions on PTE based on flags
-    if (flags & 0x2) {  // PF_W = 0x2
-      // segment is writeable, set write permission
-      *pte |= PTE_W;
-    } else {
-      // read-only
-      *pte &= ~PTE_W;
-    }
+    // Update PTE with flags
+    *pte = (*pte & ~0xFFF) | pte_flags; // Keep physical address, update only flags
   }
   return 0;
 }
@@ -401,30 +399,3 @@ copyout(pde_t *pgdir, uint va, void *p, uint len)
 // Blank page.
 //PAGEBREAK!
 // Blank page.
-
-// Increment the reference count for a given physical page
-void increment_ref_count(uint paddr) {
-    int page_idx = paddr / PGSIZE;  // Use uint for physical address
-    if (page_idx < PFN_MAX) {
-        if (ref_count[page_idx] < 255) {
-            ref_count[page_idx]++;
-        }
-    }
-}
-
-// Decrement the reference count for a given physical page
-void decrement_ref_count(uint paddr) {
-    int page_idx = paddr / PGSIZE;
-    if (page_idx < PFN_MAX && ref_count[page_idx] > 0) {
-        ref_count[page_idx]--;
-    }
-}
-
-// Get the current reference count for a given physical page
-uchar get_ref_count(uint paddr) {
-    int page_idx = paddr / PGSIZE;
-    if (page_idx < PFN_MAX) {
-        return ref_count[page_idx];
-    }
-    return 0;  // If out of bounds, return 0
-}

@@ -192,6 +192,6 @@ void            clearpteu(pde_t *pgdir, char *uva);
 #define PFN_MAX (1024*1024)
 #define PTE_COW 0x200
 int mappages(pde_t*, void*, uint, uint, int);
-void increment_ref_count(uint);
-void decrement_ref_count(uint);
-uchar get_ref_count(uint);
+void incr_refcount(uint);
+void dec_refcount(uint);
+int get_refcount(uint);

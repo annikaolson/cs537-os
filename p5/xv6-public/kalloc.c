@@ -23,6 +23,49 @@ struct {
   struct run *freelist;
 } kmem;
 
+char ref_count[PFN_MAX]; // Reference count array
+struct spinlock ref_count_lock;      // Lock for managing concurrent access
+
+// Initialize the reference count array
+void init_refcount() {
+  initlock(&ref_count_lock, "ref_count_lock");  // Initialize the lock for thread-safety
+  for (int i = 0; i < PFN_MAX; i++) {
+    ref_count[i] = 0;  // Initialize all reference counts to 0
+  }
+}
+
+// Increment the reference count for a physical page
+void incr_refcount(uint paddr) {
+  int page_idx = paddr / PGSIZE;  // Calculate the page index from the physical address
+  if (page_idx < PFN_MAX) {
+    acquire(&ref_count_lock);  // Acquire the lock before modifying ref_count
+    ref_count[page_idx]++;  // Increment the reference count for the page
+    release(&ref_count_lock);  // Release the lock after modification
+  }
+}
+
+// Decrement the reference count for a physical page
+void dec_refcount(uint paddr) {
+  int page_idx = paddr / PGSIZE;  // Calculate the page index from the physical address
+  if (page_idx < PFN_MAX) {
+    acquire(&ref_count_lock);  // Acquire the lock before modifying ref_count
+    if (ref_count[page_idx] > 0) {
+        ref_count[page_idx]--;  // Decrement the reference count for the page
+    }
+    // Optionally, if the reference count reaches 0, free the page (not shown here)
+    release(&ref_count_lock);  // Release the lock after modification
+  }
+}
+
+// Function to get the reference count for a specific physical page
+int get_refcount(uint paddr) {
+  int page_idx = paddr / PGSIZE;  // Calculate the page index from the physical address
+  if (page_idx < PFN_MAX) {
+    return ref_count[page_idx];  // Return the reference count if valid
+  }
+  return 0;  // Return 0 if the page index is out of bounds
+}
+
 // Initialization happens in two phases.
 // 1. main() calls kinit1() while still using entrypgdir to place just
 // the pages mapped by entrypgdir on free list.
@@ -41,6 +84,7 @@ kinit2(void *vstart, void *vend)
 {
   freerange(vstart, vend);
   kmem.use_lock = 1;
+  init_refcount();
 }
 
 void
