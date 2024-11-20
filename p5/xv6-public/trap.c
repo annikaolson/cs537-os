@@ -98,7 +98,7 @@ trap(struct trapframe *tf)
     uint pa = PTE_ADDR(*pte);
 
     // Copy on write fault
-    if(!(*pte & PTE_W) && *pte & PTE_COW && *pte & PTE_P) {
+    if(*pte & PTE_COW && *pte & PTE_P) {
       // alloc new page to copy the old page to
       char *new_page = kalloc();
       if (!new_page) {  // allocation failed
@@ -165,12 +165,12 @@ trap(struct trapframe *tf)
       }
 
       region->n_loaded_pages++; // increment num pages
-      lcr3(V2P(p->pgdir));
     } 
     ////////////////////////
     // Segmentation fault //
     ////////////////////////
     else {
+        cprintf("Segmentation Fault at address: 0x%x\n", faulting_addr);
         cprintf("Segmentation Fault\n");
         // kill the process
         myproc()->killed = 1;

@@ -231,22 +231,9 @@ fork(void)
 
       for (uint addr = start; addr < end; addr += PAGE_SIZE) {
         pte_t *pte = walkpgdir(curproc->pgdir, (void *)addr, 0);
-
         uint pa = PTE_ADDR(*pte);
-        uint flags = PTE_FLAGS(*pte);
-
-        // Handle COW for writable pages
-        if (flags & PTE_W || flags & PTE_COW) {
-          // Mark parent as COW
-          *pte = pa | (flags & ~PTE_W) | PTE_COW | PTE_P | PTE_U;
-          lcr3(V2P(curproc->pgdir));
-
-          // Use mappages to map the page in the child process's page table
-          mappages(np->pgdir, (void *)addr, PGSIZE, pa, PTE_P | PTE_U | PTE_COW);
-        } else {
-          // Normal copy using mappages
-          mappages(np->pgdir, (void *)addr, PGSIZE, pa, PTE_P | PTE_U);
-        }
+        // Normal copy using mappages
+        mappages(np->pgdir, (void *)addr, PGSIZE, pa, PTE_W | PTE_P | PTE_U);
       }
     }
   }
@@ -254,8 +241,11 @@ fork(void)
   // Copy memory map metadata.
   np->wmap_count = curproc->wmap_count;
   release(&ptable.lock);
+  // Flush the TLB
+  lcr3(V2P(np->pgdir));
+  lcr3(V2P(curproc->pgdir));
 
-    // Clear %eax so that fork returns 0 in the child.
+  // Clear %eax so that fork returns 0 in the child.
   np->tf->eax = 0;
 
   for(i = 0; i < NOFILE; i++)
@@ -826,14 +816,13 @@ int wunmap_helper(uint addr) {
       pte_t *pt = (pte_t*)P2V(PTE_ADDR(*pde));  // Get the physical address of the page table
       pte_t *pte = &pt[ptx];  // Get the page table entry for the address
 
-      if (*pte & PTE_P) {  // Check if the page table entry is valid and page is present in memory
+      if (*pte & PTE_P && get_refcount(PTE_ADDR(pte)) == 0) {  // Check if the page table entry is valid and page is present in memory
         uint physical_addr = PTE_ADDR(*pte);  // Get physical address from the PTE
         kfree(P2V(physical_addr));  // "Free" the physical page
       }
       *pte = 0;  // Clear the PTE (unmap the page)
     }
   }
-  lcr3(V2P(myproc()->pgdir)); // flush the TLB
 
   // Remove mapping from proc's memory regions
   for (int i = region_index; i < p->wmap_count - 1; i++) {
