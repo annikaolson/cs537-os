@@ -38,9 +38,9 @@ void init_refcount() {
 void incr_refcount(uint paddr) {
   int page_idx = paddr / PGSIZE;  // Calculate the page index from the physical address
   if (page_idx < PFN_MAX) {
-    acquire(&ref_count_lock);  // Acquire the lock before modifying ref_count
+    //acquire(&ref_count_lock);  // Acquire the lock before modifying ref_count
     ref_count[page_idx]++;  // Increment the reference count for the page
-    release(&ref_count_lock);  // Release the lock after modification
+    //release(&ref_count_lock);  // Release the lock after modification
   }
 }
 
@@ -48,12 +48,12 @@ void incr_refcount(uint paddr) {
 void dec_refcount(uint paddr) {
   int page_idx = paddr / PGSIZE;  // Calculate the page index from the physical address
   if (page_idx < PFN_MAX) {
-    acquire(&ref_count_lock);  // Acquire the lock before modifying ref_count
+    //acquire(&ref_count_lock);  // Acquire the lock before modifying ref_count
     if (ref_count[page_idx] > 0) {
         ref_count[page_idx]--;  // Decrement the reference count for the page
     }
     // Optionally, if the reference count reaches 0, free the page (not shown here)
-    release(&ref_count_lock);  // Release the lock after modification
+    //release(&ref_count_lock);  // Release the lock after modification
   }
 }
 
@@ -63,7 +63,7 @@ int get_refcount(uint paddr) {
   if (page_idx < PFN_MAX) {
     return ref_count[page_idx];  // Return the reference count if valid
   }
-  return 0;  // Return 0 if the page index is out of bounds
+  return -1;  // Return 0 if the page index is out of bounds
 }
 
 // Initialization happens in two phases.
@@ -104,20 +104,29 @@ void
 kfree(char *v)
 {
   struct run *r;
+  uint pa = V2P(v);
 
   if((uint)v % PGSIZE || v < end || V2P(v) >= PHYSTOP)
     panic("kfree");
 
-  // Fill with junk to catch dangling refs.
-  memset(v, 1, PGSIZE);
 
   if(kmem.use_lock)
+    // Acquire the lock
     acquire(&kmem.lock);
-  r = (struct run*)v;
-  r->next = kmem.freelist;
-  kmem.freelist = r;
+
+  // Decrement the reference amount
+  dec_refcount(pa);
+
+  // Only free the page when the reference count reaches 0
+  if (get_refcount(pa) == 0){
+    // Fill with junk to catch dangling refs.
+    memset(v, 1, PGSIZE);
+    r = (struct run*)v;
+    r->next = kmem.freelist;
+    kmem.freelist = r;
+  }
   if(kmem.use_lock)
-    release(&kmem.lock);
+      release(&kmem.lock);
 }
 
 // Allocate one 4096-byte page of physical memory.
@@ -133,6 +142,7 @@ kalloc(void)
   r = kmem.freelist;
   if(r)
     kmem.freelist = r->next;
+  incr_refcount((uint)r);
   if(kmem.use_lock)
     release(&kmem.lock);
   return (char*)r;

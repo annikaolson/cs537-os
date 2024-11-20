@@ -239,11 +239,10 @@ fork(void)
         if (flags & PTE_W || flags & PTE_COW) {
           // Mark parent as COW
           *pte = pa | (flags & ~PTE_W) | PTE_COW | PTE_P | PTE_U;
+          lcr3(V2P(curproc->pgdir));
 
           // Use mappages to map the page in the child process's page table
           mappages(np->pgdir, (void *)addr, PGSIZE, pa, PTE_P | PTE_U | PTE_COW);
-
-          incr_refcount(pa); // Increment reference count for shared page
         } else {
           // Normal copy using mappages
           mappages(np->pgdir, (void *)addr, PGSIZE, pa, PTE_P | PTE_U);
@@ -829,11 +828,7 @@ int wunmap_helper(uint addr) {
 
       if (*pte & PTE_P) {  // Check if the page table entry is valid and page is present in memory
         uint physical_addr = PTE_ADDR(*pte);  // Get physical address from the PTE
-        // Decrement the reference count
-        dec_refcount(physical_addr);
-        if (get_refcount(physical_addr) == 0) {
-          kfree(P2V(physical_addr));  // Free the physical page only if reference count reaches 0
-        }
+        kfree(P2V(physical_addr));  // "Free" the physical page
       }
       *pte = 0;  // Clear the PTE (unmap the page)
     }

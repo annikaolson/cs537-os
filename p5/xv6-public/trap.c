@@ -96,11 +96,9 @@ trap(struct trapframe *tf)
     uint found_index = valid_memory_mapping_index(p, faulting_addr);
     pte_t *pte = walkpgdir(p->pgdir, (void*)faulting_addr, 0);
     uint pa = PTE_ADDR(*pte);
-    if(*pte & !PTE_W && *pte & PTE_COW && *pte & PTE_P) {
-      cprintf("trap: page fault at address 0x%x\n", rcr2());
-      // decrement reference count
-      dec_refcount(pa);
 
+    // Copy on write fault
+    if(!(*pte & PTE_W) && *pte & PTE_COW && *pte & PTE_P) {
       // alloc new page to copy the old page to
       char *new_page = kalloc();
       if (!new_page) {  // allocation failed
@@ -108,27 +106,17 @@ trap(struct trapframe *tf)
         break;
       }
 
-      // clear the page
-      memset(new_page, 0, PGSIZE);
-
       // copy old page to new page
       memmove(new_page, (char*)P2V(pa), PGSIZE);
-
-      // Update the page table for the current process
-      if (mappages(myproc()->pgdir, (void *)faulting_addr, PGSIZE, V2P(new_page), PTE_W | PTE_U | PTE_P) < 0) {
-        panic("trap: mappages failed");
-      }
 
       // Clear the COW flag for the faulting process
       *pte = V2P(new_page) | PTE_W | PTE_U | PTE_P;
 
-      // Free the old page if necessary
-      if (get_refcount(pa) == 0) {
-        kfree((void *)pa); 
-      }
-
       // Flush the TLB
       lcr3(V2P(p->pgdir));
+
+      // free the old page 
+      kfree((char*)P2V(pa));
     } 
     ///////////////////////////////////
     // Otherwise, WMAP related fault //
@@ -162,7 +150,7 @@ trap(struct trapframe *tf)
         region->file->off = page_addr - region->addr;
         if (fileread(region->file, new_page, PAGE_SIZE) > PAGE_SIZE) {
           panic("file read");
-          kfree(new_page);
+          kfree(P2V(new_page));
           p->killed = 1;
           break;
         }
@@ -171,13 +159,12 @@ trap(struct trapframe *tf)
       // Map the populated page to the faulting address
       if (mappages(p->pgdir, (void*)page_addr, PAGE_SIZE, V2P(new_page), PTE_W | PTE_U | PTE_P) < 0) {
         panic("mappages");
-        kfree(new_page);
+        kfree(P2V(new_page));
         p->killed = 1;
         break;
       }
 
       region->n_loaded_pages++; // increment num pages
-      incr_refcount(pa);
       lcr3(V2P(p->pgdir));
     } 
     ////////////////////////
