@@ -4,6 +4,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include "wfs.h"
 
 /**
  * Initializes a file to an empty filesystem.
@@ -26,8 +27,16 @@ int create_fs(int raid_mode, int num_inodes, int num_data_blocks, char **disks, 
             return 1;
         }
         
-        // check if image file is too small to accomodate number of blocks
+        // check if disk image file is too small to accomodate number of blocks
         size_t min_size;
+        size_t min_size = sizeof(struct wfs_sb) +
+                        num_inodes * sizeof(struct wfs_inode) +
+                        num_data_blocks / 8 +
+                        num_inodes / 8;
+        if (lseek(fd, 0, SEEK_END) < min_size) {
+            close(fd);
+            return 1;
+        }
     }
 }
 
