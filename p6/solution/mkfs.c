@@ -28,7 +28,7 @@ int create_fs(int raid_mode, int num_inodes, int num_data_blocks, char **disks, 
         }
         
         // check if disk image file is too small to accomodate number of blocks
-        size_t min_size;
+        size_t min_size;    // superblock + inodes + data blocks
         size_t min_size = sizeof(struct wfs_sb) +
                         num_inodes * sizeof(struct wfs_inode) +
                         num_data_blocks / 8 +
@@ -48,7 +48,7 @@ int main(int argc, char** argv) {
 
     // vars for passed in args
     int raid_mode;
-    char *disks[10] = {NULL};
+    // TODO: make disks array *disks[n];
     int num_disks;
     int num_inodes;
     int num_data_blocks;
@@ -61,7 +61,7 @@ int main(int argc, char** argv) {
             i++;    // move onto next CLA
         }   // '-d <disk>'
         else if (!strcmp(argv[i], "-d")) {
-
+            // TODO: add disk to disks array
         }   // '-i <num inodes in filesystem>'
         else if (!strcmp(argv[i], "-i")) {
             num_inodes = atoi(argv[i + 1]); // get following arg
