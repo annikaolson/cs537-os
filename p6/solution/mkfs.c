@@ -1,9 +1,20 @@
 // PART 1: mkfs.c - 15% of grade
+
+// *NOTE*: going to make a piazza post about this i think. but for some of the tests,
+// the args being passed in ar wrong. notably 5 and 6. for 5, num inodes is 30, but reading 33
+// and num blocks is 220, reading 225. tests still pass. when i run 5.pre in the terminal then
+// 5.run in the terminal, the CLA parsing reads in the right numbers, but when i run the tests as
+// a whole, it doesn't. its super weird. for test 6, it does the same thing, and for that one,
+// the RAID is being read as 3 (invalid) - but yet it doesn't return 1 (or return at all) like it
+// should????? it still passes???? confuses tf outta me. once again works perfectly when i run it
+// separately. feel free to try, otherwise i make piazza post
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <errno.h>
 #include "wfs.h"
 
 /**
@@ -20,9 +31,6 @@
  * returns 1 upon error, 0 upon success
 */
 int create_fs(int raid_mode, int num_inodes, int num_data_blocks, char **disks, int num_disks) {
-
-    printf("num inodes: %d\n", num_inodes);
-    printf("num blocks: %d\n", num_data_blocks);
 
     // calculate the minimum size the disk image file must be
     int min_size;    // superblock + inodes + data blocks
@@ -66,13 +74,13 @@ int create_fs(int raid_mode, int num_inodes, int num_data_blocks, char **disks, 
     for (int i = 0; i < num_disks; i++) {
         int fd = open(disks[i], O_RDWR | O_CREAT, 0644);
         if (fd < 0) {
-            return 1;
+            return -ENOENT;
         }
         
         // check if disk image file is too small to accomodate number of blocks
         if (lseek(fd, 0, SEEK_END) < min_size) {
             close(fd);
-            return 1;
+            return -1;
         }
 
         // zero out disk
@@ -100,7 +108,6 @@ int create_fs(int raid_mode, int num_inodes, int num_data_blocks, char **disks, 
             memset(&inode, 0, sizeof(struct wfs_inode));  // init to 0
             write(fd, &inode, sizeof(struct wfs_inode));  // write inode
         }
-
 
         // write datablocks to each disk - RAID dependent
 
@@ -145,18 +152,11 @@ int create_fs(int raid_mode, int num_inodes, int num_data_blocks, char **disks, 
         }
 
         close(fd);  // done!
-
     }
-
     return 0;
 }
 
 int main(int argc, char** argv) {
-    // verify number of CLAs
-    if (argc < 1) {
-        return -1;  // should be at lesaet 1 CLA
-    }
-
     // vars for passed in args
     int raid_mode = -1; // init to invalid
     char *disks[10]; // piazza said 10 is reasonable lol
@@ -190,7 +190,6 @@ int main(int argc, char** argv) {
         }   // '-i <num inodes in filesystem>'
         else if (!strcmp(argv[i], "-i") && (i + 1 < argc)) {
             num_inodes = atoi(argv[i + 1]); // get following arg
-            printf("num inodes here: %s\n", argv[i + 1]);
             i++;    // move onto next CLA
         }   // '-b <num data blocks in system>'
         else if (!strcmp(argv[i], "-b") && (i + 1 < argc)) {
@@ -199,10 +198,15 @@ int main(int argc, char** argv) {
         }
     }
 
+    // must have at least two disks
+    if (num_disks < 2) {
+        return 1;   // pre-run failure
+    }
+
     // check to see if a raid mode was passed in
     if (raid_mode == -1) {
         fprintf(stderr, "Error: No RAID mode specified.\n");
-        return 1;
+        return -1;
     }
 
     // round up number of blocks to multiple of 32 to prevent data structures
@@ -211,10 +215,12 @@ int main(int argc, char** argv) {
         num_data_blocks += 32 - (num_data_blocks % 32);
     }
 
-    // initialize file to empty filesystem
-    if (create_fs(raid_mode, num_inodes, num_data_blocks, disks, num_disks) != 0) {
-        return 1;   // error
+    // round up number of blocks to multiple of 32 to prevent data structures
+    // on disk from being misaligned... inodes count too
+    if ((num_inodes % 32) != 0) {
+        num_inodes += 32 - (num_inodes % 32);
     }
 
-    return 0;
+    // initialize file to empty filesystem
+    return create_fs(raid_mode, num_inodes, num_data_blocks, disks, num_disks);
 }
