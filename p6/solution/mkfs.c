@@ -215,6 +215,8 @@ int main(int argc, char** argv) {
         num_data_blocks += 32 - (num_data_blocks % 32);
     }
 
+	//printf("Number of Inodes: %d\n", num_inodes);
+
     // round up number of blocks to multiple of 32 to prevent data structures
     // on disk from being misaligned... inodes count too
     if ((num_inodes % 32) != 0) {
