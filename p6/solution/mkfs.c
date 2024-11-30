@@ -1,14 +1,5 @@
 // PART 1: mkfs.c - 15% of grade
 
-// *NOTE*: going to make a piazza post about this i think. but for some of the tests,
-// the args being passed in ar wrong. notably 5 and 6. for 5, num inodes is 30, but reading 33
-// and num blocks is 220, reading 225. tests still pass. when i run 5.pre in the terminal then
-// 5.run in the terminal, the CLA parsing reads in the right numbers, but when i run the tests as
-// a whole, it doesn't. its super weird. for test 6, it does the same thing, and for that one,
-// the RAID is being read as 3 (invalid) - but yet it doesn't return 1 (or return at all) like it
-// should????? it still passes???? confuses tf outta me. once again works perfectly when i run it
-// separately. feel free to try, otherwise i make piazza post
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -50,7 +41,15 @@ int create_fs(int raid_mode, int num_inodes, int num_data_blocks, char **disks, 
     superblock.i_bitmap_ptr = sizeof(struct wfs_sb);
     superblock.d_bitmap_ptr = superblock.i_bitmap_ptr + inode_bitmap_size;
     superblock.i_blocks_ptr = (superblock.d_bitmap_ptr + data_bitmap_size + BLOCK_SIZE - 1) & ~(BLOCK_SIZE - 1);
-    superblock.d_blocks_ptr = superblock.i_blocks_ptr + inode_table_size;   
+    superblock.d_blocks_ptr = superblock.i_blocks_ptr + inode_table_size;
+
+    // init RAID-related fields
+    superblock.raid_mode = raid_mode;
+    superblock.num_disks = num_disks;
+    // set disk order
+    for (int i = 0; i < num_disks; i++) {
+        strncpy(superblock.disk_order[i], disks[i], MAX_NAME);
+    }
 
     // initialize root inode: other files and directorires can be created here
     struct wfs_inode root_inode;
@@ -214,8 +213,6 @@ int main(int argc, char** argv) {
     if ((num_data_blocks % 32) != 0) {
         num_data_blocks += 32 - (num_data_blocks % 32);
     }
-
-	//printf("Number of Inodes: %d\n", num_inodes);
 
     // round up number of blocks to multiple of 32 to prevent data structures
     // on disk from being misaligned... inodes count too
