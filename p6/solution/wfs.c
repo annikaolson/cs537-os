@@ -1,11 +1,11 @@
 #define FUSE_USE_VERSION 30
 #include <fuse.h>
 #include <errno.h>
-#include <string.h>
+#include <time.h>
+#include <sys/stat.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <sys/stat.h>
-#include <unistd.h>
+#include <string.h>
 #include "wfs.h"
 
 ////////////////////////////
@@ -22,6 +22,77 @@ static struct fuse_operations ops = {
     .readdir = wfs_readdir,
 };
 
+/////////////////////////////
+// MOUNTING THE FILESYSTEM //
+/////////////////////////////
+static struct wfs_sb superblock;
+
+/*
+ * Helper function to read the superblock
+ */
+int read_superblock(const char *disk, struct wfs_sb *superblock) {
+    FILE *fp = fopen(disk, "rb");
+    if (!fp) {
+        perror("Error opening disk");
+        return -1;
+    }
+
+    // Read the superblock from the beginning of the disk
+    if (fread(superblock, sizeof(superblock), 1, fp) != 1) {
+        perror("Error reading superblock");
+        fclose(fp);
+        return -1;
+    }
+
+    fclose(fp);
+    return 0;
+}
+
+/*
+ * Function for mounting the filesystem
+ */
+int mount_fs(char **disks, int num_disks) {
+    // validate number of disks against superblock
+    if (num_disks != superblock.num_disks) {
+        fprintf(stderr, "Error: Invalid number of disks. Expected %d disks, but got %d.\n", superblock.num_disks, num_disks);
+        return -1;
+    }
+
+    // read the superblock from the first disk
+    if (read_superblock(disks[0]) != 0) {
+        // failed to read superblock
+        return -1;
+    }
+
+    // handle RAID logic based on RAID mode
+    switch (superblock.raid_mode) {
+        // RAID 0 (striping)
+        case 0:
+            // read data block from each disk (round-robin)
+            
+            break;
+
+        // RAID 1 (mirroring)
+        case 1:
+            // data is mirrored, read from disk 0 since it doesn't matter
+            
+            break;
+
+        // RAID 1V (verified mirroring)
+        case 2:
+            // compare data on all disks and return the majority
+            break;
+
+        default:
+            fprintf(stderr, "Error: Unknown RAID mode %d.\n", superblock.raid_mode);
+            return -1;
+    }
+
+    // Step 5: If everything checks out, the filesystem is successfully mounted
+    printf("Filesystem successfully mounted.\n");
+    return 0;
+}
+
 ////////////////////////
 // CALLBACK FUNCTIONS //
 ////////////////////////
@@ -37,8 +108,11 @@ static struct fuse_operations ops = {
  * This call is pretty much required for a usable filesystem.
  * "
  * 
- * path: filr or directory path requested by the user
+ * path: file or directory path requested by the user
  * stbuf: a struct stat pointer to store the attributes of the file or directry
+ * return: 
+ *      0 on sucess
+ *      -ENOENT if the file/directory doesn't exist
  */
 static int wfs_getattr(const char* path, struct stat* stbuf){
     printf("wfs_getattr called with path: %s\n", path);
@@ -136,6 +210,39 @@ wfs_readdir(const char* path, void* buf, fuse_fill_dir_t filler, off_t offset, s
 ///////////////////
 // MAIN FUNCTION //
 ///////////////////
-int main(void){
-    return 0;
+int main(int argc, char** argv){
+    if (argc < 3){
+        fprintf(stderr,"Not enough arguments");
+        return -1;
+    }
+
+    // number of disks to mount
+    int num_disks = 0;
+    char *mount_point = NULL;
+
+    // count the number of disks until -s is hit and get mnt
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-s") == 0) {
+            if (i + 1 < argc) {
+                mount_point = argv[i + 1];
+                break;
+            }
+        }
+        num_disks++;
+    }
+
+    // fails if no -s flag or mnt point
+    if (!mount_point) {
+        fprintf(stderr, "Error: No -s flag or mount point provided.\n");
+        return -1;
+    }
+
+    // fill disks array
+    char *disks[num_disks];
+    for (int i = 0; i < num_disks; i++) {
+        disks[i] = argv[i + 1];
+    }
+
+    // try to mount the filesystem
+    return mount_fs(disks, num_disks);
 }
