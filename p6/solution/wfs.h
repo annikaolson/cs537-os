@@ -32,6 +32,9 @@ struct wfs_sb {
     off_t i_blocks_ptr;
     off_t d_blocks_ptr;
     // Extend after this line
+    int raid_mode;            // RAID mode: 0, 1, or 2 (1v)
+    int num_disks;            // number of disks
+    char disk_order[10][MAX_NAME]; // disk names (for order of disks)
 };
 
 // Inode
