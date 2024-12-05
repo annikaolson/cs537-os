@@ -64,48 +64,94 @@ int read_superblock(const char *disk, struct wfs_sb *superblock) {
     return 0;
 }
 
-/*
- * Function for mounting the filesystem
+struct wfs_mount_info {
+    struct wfs_sb superblock;
+    int num_disks;
+    int disk_fds[10];
+    char disk_names[10][MAX_NAME];
+};
+
+/**
+ * Mounts the filesystem by reading the superblock and opening the disk files.
+ * Returns a pointer to the mount info on success, NULL on failure.
  */
-int mount_fs(char **disks, int num_disks) {
-    // validate number of disks against superblock
-    if (num_disks != superblock.num_disks) {
-        fprintf(stderr, "Error: Invalid number of disks. Expected %d disks, but got %d.\n", superblock.num_disks, num_disks);
+struct wfs_mount_info *wfs_mount(char **disks, int num_disks) {
+    if (num_disks < 2 || num_disks > 10) {
+        fprintf(stderr, "Error: Number of disks must be between 2 and 10.\n");
+        return NULL;
+    }
+
+    struct wfs_mount_info *mount_info = malloc(sizeof(struct wfs_mount_info));
+    if (!mount_info) {
+        perror("Error allocating memory for mount info");
+        return NULL;
+    }
+
+    memset(mount_info, 0, sizeof(struct wfs_mount_info));
+    mount_info->num_disks = num_disks;
+
+    // Open all disks and read their superblocks
+    for (int i = 0; i < num_disks; i++) {
+        int fd = open(disks[i], O_RDWR);
+        if (fd < 0) {
+            perror("Error opening disk");
+            free(mount_info);
+            return NULL;
+        }
+        mount_info->disk_fds[i] = fd;
+        strncpy(mount_info->disk_names[i], disks[i], MAX_NAME);
+
+        // Read the superblock from the first disk
+        if (i == 0) {
+            if (read(fd, &mount_info->superblock, sizeof(struct wfs_sb)) != sizeof(struct wfs_sb)) {
+                perror("Error reading superblock");
+                close(fd);
+                free(mount_info);
+                return NULL;
+            }
+        } else {
+            // Verify RAID consistency for disks beyond the first
+            struct wfs_sb temp_sb;
+            if (read(fd, &temp_sb, sizeof(struct wfs_sb)) != sizeof(struct wfs_sb)) {
+                perror("Error reading superblock from disk");
+                close(fd);
+                free(mount_info);
+                return NULL;
+            }
+            // Ensure consistency of RAID configuration
+            if (memcmp(&temp_sb, &mount_info->superblock, sizeof(struct wfs_sb)) != 0) {
+                fprintf(stderr, "Error: Superblock mismatch between disks.\n");
+                close(fd);
+                free(mount_info);
+                return NULL;
+            }
+        }
+    }
+
+    printf("Filesystem mounted successfully.\n");
+    return mount_info;
+}
+
+/**
+ * Unmounts the filesystem by closing all disk files and freeing resources.
+ * Returns 0 on success, -1 on failure.
+ */
+int wfs_unmount(struct wfs_mount_info *mount_info) {
+    if (!mount_info) {
+        fprintf(stderr, "Error: Invalid mount info.\n");
         return -1;
     }
 
-    // read the superblock from the first disk
-    if (read_superblock(disks[0], &superblock) != 0) {
-        // failed to read superblock
-        return -1;
-    }
-
-    // handle RAID logic based on RAID mode
-    switch (superblock.raid_mode) {
-        // RAID 0 (striping)
-        case 0:
-            // read data block from each disk (round-robin)
-            
-            break;
-
-        // RAID 1 (mirroring)
-        case 1:
-            // data is mirrored, read from disk 0 since it doesn't matter
-            
-            break;
-
-        // RAID 1V (verified mirroring)
-        case 2:
-            // compare data on all disks and return the majority
-            break;
-
-        default:
-            fprintf(stderr, "Error: Unknown RAID mode %d.\n", superblock.raid_mode);
+    for (int i = 0; i < mount_info->num_disks; i++) {
+        if (close(mount_info->disk_fds[i]) < 0) {
+            perror("Error closing disk");
+            free(mount_info);
             return -1;
+        }
     }
 
-    // Step 5: If everything checks out, the filesystem is successfully mounted
-    printf("Filesystem successfully mounted.\n");
+    free(mount_info);
+    printf("Filesystem unmounted successfully.\n");
     return 0;
 }
 
