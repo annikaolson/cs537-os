@@ -3,6 +3,7 @@
 
 #define BLOCK_SIZE (512)
 #define MAX_NAME   (28)
+#define MAX_DISKS  (10)
 
 #define D_BLOCK    (6)
 #define IND_BLOCK  (D_BLOCK+1)

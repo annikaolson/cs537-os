@@ -9,6 +9,7 @@
 #include <unistd.h>
 #include <sys/types.h>  
 #include <fcntl.h> 
+#include <libgen.h>
 #include "wfs.h"
 
 ////////////////////////////////
@@ -43,207 +44,60 @@ static struct fuse_operations ops = {
 static struct wfs_sb superblock;
 void *disk_map = NULL;
 
-/*
- * Helper function to read the superblock
- */
-int read_superblock(const char *disk, struct wfs_sb *superblock) {
-    FILE *fp = fopen(disk, "rb");
-    if (!fp) {
-        perror("Error opening disk");
-        return -1;
-    }
-
-    // Read the superblock from the beginning of the disk
-    if (fread(superblock, sizeof(superblock), 1, fp) != 1) {
-        perror("Error reading superblock");
-        fclose(fp);
-        return -1;
-    }
-
-    fclose(fp);
-    return 0;
-}
-
-struct wfs_mount_info {
-    struct wfs_sb superblock;
-    int num_disks;
-    int disk_fds[10];
-    char disk_names[10][MAX_NAME];
-};
-
-/**
- * Mounts the filesystem by reading the superblock and opening the disk files.
- * Returns a pointer to the mount info on success, NULL on failure.
- */
-struct wfs_mount_info *wfs_mount(char **disks, int num_disks) {
-    if (num_disks < 2 || num_disks > 10) {
-        fprintf(stderr, "Error: Number of disks must be between 2 and 10.\n");
-        return NULL;
-    }
-
-    struct wfs_mount_info *mount_info = malloc(sizeof(struct wfs_mount_info));
-    if (!mount_info) {
-        perror("Error allocating memory for mount info");
-        return NULL;
-    }
-
-    memset(mount_info, 0, sizeof(struct wfs_mount_info));
-    mount_info->num_disks = num_disks;
-
-    // Open all disks and read their superblocks
-    for (int i = 0; i < num_disks; i++) {
-        int fd = open(disks[i], O_RDWR);
-        if (fd < 0) {
-            perror("Error opening disk");
-            free(mount_info);
-            return NULL;
-        }
-        mount_info->disk_fds[i] = fd;
-        strncpy(mount_info->disk_names[i], disks[i], MAX_NAME);
-
-        // Read the superblock from the first disk
-        if (i == 0) {
-            if (read(fd, &mount_info->superblock, sizeof(struct wfs_sb)) != sizeof(struct wfs_sb)) {
-                perror("Error reading superblock");
-                close(fd);
-                free(mount_info);
-                return NULL;
-            }
-        } else {
-            // Verify RAID consistency for disks beyond the first
-            struct wfs_sb temp_sb;
-            if (read(fd, &temp_sb, sizeof(struct wfs_sb)) != sizeof(struct wfs_sb)) {
-                perror("Error reading superblock from disk");
-                close(fd);
-                free(mount_info);
-                return NULL;
-            }
-            // Ensure consistency of RAID configuration
-            if (memcmp(&temp_sb, &mount_info->superblock, sizeof(struct wfs_sb)) != 0) {
-                fprintf(stderr, "Error: Superblock mismatch between disks.\n");
-                close(fd);
-                free(mount_info);
-                return NULL;
-            }
-        }
-    }
-
-    printf("Filesystem mounted successfully.\n");
-    return mount_info;
-}
-
-/**
- * Unmounts the filesystem by closing all disk files and freeing resources.
- * Returns 0 on success, -1 on failure.
- */
-int wfs_unmount(struct wfs_mount_info *mount_info) {
-    if (!mount_info) {
-        fprintf(stderr, "Error: Invalid mount info.\n");
-        return -1;
-    }
-
-    for (int i = 0; i < mount_info->num_disks; i++) {
-        if (close(mount_info->disk_fds[i]) < 0) {
-            perror("Error closing disk");
-            free(mount_info);
-            return -1;
-        }
-    }
-
-    free(mount_info);
-    printf("Filesystem unmounted successfully.\n");
-    return 0;
-}
-
 //////////////////////
 // HELPER FUNCTIONS //
 //////////////////////
-
-/**
- * allocates an inode by searching the inode bitmap to find the first
- * free inode
- * 
- * returns the inode number or error if no free inodes available
-*/
+// Lazy allocation of an inode
 int allocate_inode() {
-    // access the inode bitmap from disk
-    char *inode_bitmap = (char *)(disk_map) + superblock.i_bitmap_ptr;
+    for (int i = 0; i < superblock.num_inodes; i++) {
+        // Check if the inode is free in the inode bitmap
+        fseek(disk_map, superblock.i_bitmap_ptr + i / 8, SEEK_SET);
+        unsigned char byte;
+        fread(&byte, sizeof(byte), 1, disk_map);
+        
+        if (!(byte & (1 << (i % 8)))) {  // If the bit is 0, the inode is free
+            // Mark the inode as allocated
+            byte |= (1 << (i % 8));
+            fseek(disk_map, superblock.i_bitmap_ptr + i / 8, SEEK_SET);
+            fwrite(&byte, sizeof(byte), 1, disk_map);
 
-    // find the first free inode in the inode bitmap
-    for (size_t i = 0; i < superblock.num_inodes; i++) {
-        if (!(inode_bitmap[i / 8] & (1 << (i % 8)))) {
-            // mark the inode as used by setting the corresponding bit
-            inode_bitmap[i / 8] |= (1 << (i % 8));
-
-            // return the inode number
-            return i + 1;
+            // Return the inode number instead of a fully initialized inode
+            return i;
         }
     }
-
-    return -ENOSPC;  // no free inode
+    return -1;  // No free inode available
 }
 
-/**
- * allocates a data block by searching the dta block bitmap to find the first
- * free block
- * 
- * returns the inode number or error if no free inodes available
-*/
+// Lazy allocation of a data block
 int allocate_data_block() {
-    // access the inode bitmap from disk
-    char *data_bitmap = (char *)(disk_map) + superblock.d_bitmap_ptr;
+    for (int i = 0; i < superblock.num_data_blocks; i++) {
+        fseek(disk_map, superblock.d_bitmap_ptr + i / 8, SEEK_SET);
+        unsigned char byte;
+        fread(&byte, sizeof(byte), 1, disk_map);
 
-    // find the first free inode in the inode bitmap
-    for (size_t i = 0; i < superblock.num_data_blocks; i++) {
-        if (!(data_bitmap[i / 8] & (1 << (i % 8)))) {
-            // mark the data block as used by setting the corresponding bit
-            data_bitmap[i / 8] |= (1 << (i % 8));
-
-            return i + 1;
+        if (!(byte & (1 << (i % 8)))) {  // Block is free if the corresponding bit is 0
+            // Mark the block as allocated
+            byte |= (1 << (i % 8));
+            fseek(disk_map, superblock.d_bitmap_ptr + i / 8, SEEK_SET);
+            fwrite(&byte, sizeof(byte), 1, disk_map);
+            
+            return i;  // Return the index of the allocated block
         }
     }
-
-    return -ENOSPC;  // no free inode
+    return -1;  // No free data block available
 }
 
-// Function to get inode given the inode number
-struct wfs_inode *get_inode(int inode_num) {
-    // Calculate the block in which the inode is stored
-    // Assuming the inode table starts at a known block, for example, superblock.i_table_ptr
-    // and each inode takes up sizeof(struct wfs_inode) bytes
+struct wfs_inode* get_parent_inode(const char *path) {
+    // For simplicity, assume the parent is the root directory for now
+    struct wfs_inode *parent_inode = malloc(sizeof(struct wfs_inode));
+    parent_inode->num = 0;  // Root inode
+    parent_inode->size = 0;
+    parent_inode->nlinks = 1;
+    parent_inode->mode = S_IFDIR;
+    parent_inode->atim = parent_inode->mtim = parent_inode->ctim = time(NULL);
     
-    size_t inode_size = sizeof(struct wfs_inode);
-    size_t inode_table_offset = superblock.i_blocks_ptr;  // The starting block of the inode table
-
-    // Calculate the offset to the inode based on the inode number (inodes are usually stored sequentially)
-    size_t inode_offset = inode_num * inode_size;
-
-    // Get the pointer to the inode data
-    struct wfs_inode *inode = (struct wfs_inode *)((char *)disk_map + inode_table_offset + inode_offset);
-
-    // Return the inode or NULL if not found (in case of error, for simplicity assuming valid inode)
-    return inode;
+    return parent_inode;
 }
-
-void init_dentry(struct wfs_dentry *entry, const char *name, int inode_num) {
-    // Ensure that the entry and name are valid
-    if (entry == NULL || name == NULL) {
-        return;
-    }
-
-    // Initialize the name (copy the string into the dentry's name field)
-    strncpy(entry->name, name, MAX_NAME - 1); // Make sure to not exceed max length
-    entry->name[MAX_NAME - 1] = '\0'; // Ensure null-termination
-
-    // Set the inode number for this entry
-    entry->num = inode_num;
-
-    // Optionally, you could set additional fields in the entry if needed
-    // entry->next = NULL; // Example if you have a linked list
-}
-
-
-
 
 ////////////////////////
 // CALLBACK FUNCTIONS //
@@ -268,45 +122,6 @@ void init_dentry(struct wfs_dentry *entry, const char *name, int inode_num) {
  */
 static int wfs_getattr(const char* path, struct stat* stbuf) {
     printf("wfs_getattr called with path: %s\n", path);
-
-    // check if path refers to root directory
-    if (!strcmp(path, "/")) {
-        // root inode is inode 0
-        struct wfs_inode root_inode;
-        int fd = open(superblock.disk_order[0], O_RDWR);
-        if (fd < 0) {
-            return -ENOENT; // disk open fails
-        }
-
-        // seek to root inode location
-        lseek(fd, superblock.i_blocks_ptr, SEEK_SET);
-        read(fd, &root_inode, sizeof(struct wfs_inode));
-
-        // set stbuf (stat)
-        memset(stbuf, 0, sizeof(struct stat));
-        stbuf->st_mode = root_inode.mode;
-        stbuf->st_size = root_inode.size;
-        stbuf->st_uid = root_inode.uid;
-        stbuf->st_gid = root_inode.gid;
-        stbuf->st_nlink = root_inode.nlinks;
-        stbuf->st_atime = root_inode.atim;
-        stbuf->st_mtime = root_inode.mtim;
-        stbuf->st_ctime = root_inode.ctim;
-
-        close(fd);
-        return 0;   // success
-    }
-
-    // not root, so lookup file path
-    int fd = open(superblock.disk_order[0], O_RDWR);
-    if (fd < 0) {
-        return -ENOENT;
-    }
-
-    //struct wfs_inode inode;
-
-    // TODO: what if not inode 0?
-
     return 0;
 }
 
@@ -326,95 +141,43 @@ static int wfs_mknod(const char *path, mode_t mode, dev_t dev) {
  * This function is needed for any reasonable read/write filesystem.
  */
 static int wfs_mkdir(const char *path, mode_t mode) {
-    printf("wfs_mkdir called with path: %s\n", path);
-    
-    // get parent directory from path
-    char parent_path[MAX_NAME];
-    char dir_name[MAX_NAME];
-    int i = strlen(path) - 1;
-
-    // extract directory name and parent path
-    while (i >= 0 && path[i] != '/') {
-        i--;
+    // Get the parent inode for the directory (simplified, assuming it's the root for now)
+    struct wfs_inode *parent_inode = get_parent_inode(path);
+    if (!parent_inode) {
+        fprintf(stderr, "Error: Parent directory not found.\n");
+        return -1;
     }
 
-    // no slash, creating a directory at root level
-    if (i < 0) {
-        strncpy(parent_path, "/", sizeof(parent_path));
-        strncpy(dir_name, path, sizeof(dir_name));
-    } else {
-        strncpy(parent_path, path, i + 1);
-        parent_path[i + 1] = '\0';  // null terminate
-        strncpy(dir_name, path + 1 + 1, sizeof(dir_name));
+    // Allocate a new inode for the directory using lazy allocation
+    int inode_num = allocate_inode();
+    if (inode_num == -1) {
+        fprintf(stderr, "Error: No available inodes.\n");
+        return -1;
     }
 
-    // find partent directory inode
-    struct wfs_inode *parent_inode = get_inode(0);  // TODO: get inode number
-    if (parent_inode == NULL) {
-        return -ENOENT; // parent directory doesn't exist
-    }
-
-    // check if directory already exists
-    struct wfs_dentry *parent_entries = (struct wfs_dentry *)(disk_map) + parent_inode->blocks[0];
-    int num_entries = parent_inode->size / sizeof(struct wfs_dentry);
-
-    for (int i = 0; i < num_entries; i++) {
-        if (!strcmp(parent_entries[i].name, dir_name)) {
-            return -EEXIST; // directory already exists
-        }
-    }
-
-    // allocate inode for new directory
-    int dir_inode_num = allocate_inode();
-    if (dir_inode_num < 0) {
-        return dir_inode_num;   // error allocating inode
-    }
-
-    struct wfs_inode new_dir_inode;
-    memset(&new_dir_inode, 0, sizeof(struct wfs_inode));
-
-    // set up new directory inode
-    new_dir_inode.mode = __S_IFDIR | mode;  // directory mode
-    new_dir_inode.size = 2 * sizeof(struct wfs_dentry);  // entries for '.' and '..'
-    new_dir_inode.nlinks = 2;  // '.' and '..'
-    new_dir_inode.uid = getuid();
-    new_dir_inode.gid = getgid();
-    time(&new_dir_inode.atim);
-    new_dir_inode.mtim = new_dir_inode.atim;
-    new_dir_inode.ctim = new_dir_inode.atim;
-
-    // alloc data block for new directory
+    // Allocate a data block for the new directory using lazy allocation
     int data_block = allocate_data_block();
-    if (data_block < 0) {
-        return data_block;  // error allocating data block
+    if (data_block == -1) {
+        fprintf(stderr, "Error: No free data blocks.\n");
+        return -1;
     }
 
-    // assign the data block to the directory inode
-    new_dir_inode.blocks[0] = data_block;
+    // Initialize the new directory entry
+    struct wfs_dentry new_entry;
+    strncpy(new_entry.name, "new_directory", MAX_NAME);
+    new_entry.num = inode_num;
 
-    // add directory entries for '.' and '..'
-    struct wfs_dentry new_dir_entries[2];
-    init_dentry(&new_dir_entries[0], ".", dir_inode_num);  // itself
-    init_dentry(&new_dir_entries[1], "..", parent_inode->num);  // parent directory
+    // Add the new directory entry to the parent inode's data block
+    fseek(disk_map, parent_inode->blocks[0], SEEK_SET);
+    fwrite(&new_entry, sizeof(new_entry), 1, disk_map);
 
-    // write the directory entries to the data block
-   // write_data_block(data_block, new_dir_entries);
+    // Update the parent directory inode (increment link count, modify timestamps)
+    parent_inode->nlinks++;
+    parent_inode->mtim = time(NULL);
 
-    // write the new directory inode to the inode table
-    //write_inode(dir_inode_num, &new_dir_inode);
-
-    // update parent directory with the new directory entry
-    struct wfs_dentry new_parent_entry;
-    init_dentry(&new_parent_entry, dir_name, dir_inode_num);
-
-    // add the new directory entry to the parent directory
-    parent_entries[num_entries] = new_parent_entry;
-    parent_inode->size += sizeof(struct wfs_dentry);
-
-    // write the updated parent inode back to disk
-    //write_inode(parent_inode->num, parent_inode);
-
-    return 0;  // success
+    // For lazy allocation, we don't initialize the new inode yet. It will be done later.
+    
+    return 0;
 }
 
 /*
@@ -493,48 +256,132 @@ static int wfs_readdir(const char* path, void* buf, fuse_fill_dir_t filler, off_
     in particular it can return -EBADF if the file handle is invalid, or -ENOENT if you use the path argument and the path doesn't exist.
 */
 
+/*
+ * Helper function to read the superblock from all disks
+ * Check that the number of disks during mount matches the superblock count
+ */ 
+int read_superblock(int num_disks) {
+    FILE *disk;
+
+    // loop through each disk in the disk order
+    for (int i = 0; i < num_disks; i++) {
+        // open the disk image in binary mode to read the superblock
+        disk = fopen(superblock.disk_order[i], "rb");  // Fix: Use superblock.disk_order[i] instead of [0]
+        if (!disk) {
+            perror("Failed to open disk");
+            return -1;
+        }
+
+        // read the superblock from the current disk
+        fseek(disk, 0, SEEK_SET);  // read from the start of the disk
+        size_t read_size = fread(&superblock, sizeof(struct wfs_sb), 1, disk);
+        if (read_size != 1) {
+            perror("Failed to read superblock from disk");
+            fclose(disk);
+            return -1;
+        }
+
+        fclose(disk);
+    }
+
+    // check that the number of disks during mount matches the superblock's number of disks
+    if (superblock.num_disks != num_disks) {
+        fprintf(stderr, "Number of disks during mount doesn't match number of disks in the superblock.\n");
+        return -1;
+    }
+
+    // success
+    return 0;
+}
+
 ///////////////////
 // MAIN FUNCTION //
 ///////////////////
 int main(int argc, char** argv){
-    if (argc < 3){
-        fprintf(stderr,"Not enough arguments");
+    // check the number of inputs
+    if (argc < 5) {
+        fprintf(stderr, "Too few args\n");
         return -1;
     }
 
-    // number of disks to mount
+    // parse disks and flags
     int num_disks = 0;
     char *mount_point = NULL;
 
-    // count the number of disks until -s is hit and get mnt
+    // process arguments, skip program name
     for (int i = 1; i < argc; i++) {
+        // handle -s flag (mount point)
         if (strcmp(argv[i], "-s") == 0) {
             if (i + 1 < argc) {
-                mount_point = argv[i + 1];
-                break;
+                mount_point = argv[i + 1];  // mount point is after -s
+                i++;  // skip mount point argument
+            } else {
+                fprintf(stderr, "Error: Missing mount point after -s\n");
+                return -1;
             }
         }
-        num_disks++;
+        // check for the -f flag (foreground)
+        else if (strcmp(argv[i], "-f") == 0) {
+            // ignore the -f flag
+        }
+        // otherwise, treat the argument as a disk image
+        else {
+            if (num_disks < MAX_DISKS) {
+                strncpy(superblock.disk_order[num_disks], argv[i], MAX_NAME);
+                num_disks++;
+            } else {
+                fprintf(stderr, "Too many disk arguments\n");
+                return -1;
+            }
+        }
     }
 
-    // fails if no -s flag or mnt point
-    if (!mount_point) {
-        fprintf(stderr, "Error: No -s flag or mount point provided.\n");
+    // at least two disks are specified
+    if (num_disks < 2) {
+        fprintf(stderr, "Not enough disks\n");
         return -1;
     }
 
-    // fill disks array
-    char *disks[num_disks];
-    for (int i = 0; i < num_disks; i++) {
-        disks[i] = argv[i + 1];
-    }
-
-    // try to mount the filesystem
-    if (mount_fs(disks, num_disks) != 0) {
+    // check the number of disks by reading the superblock
+    if (read_superblock(num_disks) != 0) {
+        // error reading superblock or mismatch in disk count
         return -1;
     }
 
-    // Now run FUSE main loop
-    return fuse_main(argc, argv, &ops, NULL);
-    
+    // check for valid mount point
+    if (mount_point == NULL) {
+        fprintf(stderr, "Missing mount point\n");
+        return -1;
+    }
+
+    // calculate the number of arguments to pass to FUSE
+    // pass the program name as argv[0], the disks, and exclude -f and -s
+    int fuse_argc = 0;
+
+    // count how many arguments will be passed to FUSE
+    for (int i = 0; i < argc; i++) {
+        if (strcmp(argv[i], "-s") == 0 || strcmp(argv[i], "-f") == 0) {
+            // skip flags
+            continue;
+        }
+        fuse_argc++;
+    }
+
+    // prepare args for FUSE (skip flags)
+    char *fuse_argv[fuse_argc];  // We need one extra for the program name
+
+    // initialize fuse_index for filling the fuse_argv
+    int fuse_index = 0;
+
+    // fill fuse_argv with valid arguments
+    for (int i = 0; i < argc; i++) {
+        if (strcmp(argv[i], "-s") == 0 || strcmp(argv[i], "-f") == 0) {
+            // skip flags
+            continue;
+        }
+        fuse_argv[fuse_index++] = argv[i];
+    }
+
+    // pass filtered arguments to FUSE
+    return fuse_main(fuse_argc, fuse_argv, &ops, NULL);
 }
