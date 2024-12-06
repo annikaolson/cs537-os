@@ -42,11 +42,80 @@ static struct fuse_operations ops = {
 // MOUNTING THE FILESYSTEM //
 /////////////////////////////
 static struct wfs_sb superblock;
+static char disks[10][MAX_NAME];
 void *disk_map = NULL;
 
 //////////////////////
 // HELPER FUNCTIONS //
 //////////////////////
+
+/**
+ * Read a superblock in from a disk
+ * 
+ * All metadata in disks are RAID 1, meaning they are mirrored across disks.
+ * This includes the superblock. So, we have made an instance of a global
+ * superblock, and this will be assigned the superblock for all disks for
+ * the file system
+ * 
+ * When the args are read in when the program starts, the disks are stored in
+ * a global disks array.
+ * 
+ * Returns 0 upon success, otherwise check for failure
+*/
+int read_superblock(int num_disks) {
+
+    // open disk as file to read metadata
+    FILE *disk_file = fopen(disks[0], "rb");
+    if (!disk_file) {
+        // file doesn't exist
+        return -ENOENT;
+    }
+
+    // read superblock from first disk image; the superblock is at offset 0
+    // fread() returns the number of elements read (1 - the superblock)
+    // we are storing the superblock we read in the global superblock variable
+    fseek(disk_file, 0, SEEK_SET);  // read from the start of the disk
+    size_t elmts_read = fread(&superblock, sizeof(struct wfs_sb), 1, disk_file);
+    if (elmts_read != 1) {
+        fclose(disk_file);
+        return -1;
+    }
+
+    // check number of disks in the read-in superblock compared to number of
+    // disks that were passed in as args
+    if (superblock.num_disks != num_disks) {
+        if (superblock.num_disks < num_disks) {
+            fprintf(stderr, "Error: not enough disks.\n");
+        } else if (superblock.num_disks > num_disks) {
+            fprintf(stderr, "Error: too many disks.\n");
+        }
+        fclose(disk_file);
+        return -1;
+    }
+
+    // verify that all disks in the superblock match the disks passed in
+    for (int i = 0; i < num_disks; i++) {
+        int found = 0;
+        // check if current disk name is in superblock's disk order
+        for (int j = 0; j < superblock.num_disks; j++) {
+            if (!strncmp(disks[i], superblock.disk_order[j], MAX_NAME)) {
+                found = 1;
+                break;
+            }
+        }
+
+        // if name not found in superblock, error
+        if (!found) {
+            fprintf(stderr, "Disks do not match expected.\n");
+            fclose(disk_file);
+            return -1;
+        }
+    }
+
+    fclose(disk_file);
+    return 0;   // success!
+}
+
 // Lazy allocation of an inode
 int allocate_inode() {
     for (int i = 0; i < superblock.num_inodes; i++) {
@@ -87,6 +156,7 @@ int allocate_data_block() {
     return -1;  // No free data block available
 }
 
+/*
 struct wfs_inode* get_parent_inode(const char *path) {
     // For simplicity, assume the parent is the root directory for now
     struct wfs_inode *parent_inode = malloc(sizeof(struct wfs_inode));
@@ -97,7 +167,16 @@ struct wfs_inode* get_parent_inode(const char *path) {
     parent_inode->atim = parent_inode->mtim = parent_inode->ctim = time(NULL);
     
     return parent_inode;
+}*/
+
+/**
+ * give an inode number, read an inode from disk
+*/
+int read_inode_from_disk(int inode_num, struct wfs_inode *inode) {
+    // 
 }
+
+
 
 ////////////////////////
 // CALLBACK FUNCTIONS //
@@ -141,6 +220,7 @@ static int wfs_mknod(const char *path, mode_t mode, dev_t dev) {
  * This function is needed for any reasonable read/write filesystem.
  */
 static int wfs_mkdir(const char *path, mode_t mode) {
+    /*
     // Get the parent inode for the directory (simplified, assuming it's the root for now)
     struct wfs_inode *parent_inode = get_parent_inode(path);
     if (!parent_inode) {
@@ -176,7 +256,7 @@ static int wfs_mkdir(const char *path, mode_t mode) {
     parent_inode->mtim = time(NULL);
 
     // For lazy allocation, we don't initialize the new inode yet. It will be done later.
-    
+    */
     return 0;
 }
 
@@ -256,44 +336,6 @@ static int wfs_readdir(const char* path, void* buf, fuse_fill_dir_t filler, off_
     in particular it can return -EBADF if the file handle is invalid, or -ENOENT if you use the path argument and the path doesn't exist.
 */
 
-/*
- * Helper function to read the superblock from all disks
- * Check that the number of disks during mount matches the superblock count
- */ 
-int read_superblock(int num_disks) {
-    FILE *disk;
-
-    // loop through each disk in the disk order
-    for (int i = 0; i < num_disks; i++) {
-        // open the disk image in binary mode to read the superblock
-        disk = fopen(superblock.disk_order[i], "rb");  // Fix: Use superblock.disk_order[i] instead of [0]
-        if (!disk) {
-            perror("Failed to open disk");
-            return -1;
-        }
-
-        // read the superblock from the current disk
-        fseek(disk, 0, SEEK_SET);  // read from the start of the disk
-        size_t read_size = fread(&superblock, sizeof(struct wfs_sb), 1, disk);
-        if (read_size != 1) {
-            perror("Failed to read superblock from disk");
-            fclose(disk);
-            return -1;
-        }
-
-        fclose(disk);
-    }
-
-    // check that the number of disks during mount matches the superblock's number of disks
-    if (superblock.num_disks != num_disks) {
-        fprintf(stderr, "Number of disks during mount doesn't match number of disks in the superblock.\n");
-        return -1;
-    }
-
-    // success
-    return 0;
-}
-
 ///////////////////
 // MAIN FUNCTION //
 ///////////////////
@@ -327,7 +369,7 @@ int main(int argc, char** argv){
         // otherwise, treat the argument as a disk image
         else {
             if (num_disks < MAX_DISKS) {
-                strncpy(superblock.disk_order[num_disks], argv[i], MAX_NAME);
+                strncpy(disks[num_disks], argv[i], MAX_NAME);
                 num_disks++;
             } else {
                 fprintf(stderr, "Too many disk arguments\n");
@@ -343,9 +385,9 @@ int main(int argc, char** argv){
     }
 
     // check the number of disks by reading the superblock
+    int read_sb_res = read_superblock(num_disks);
     if (read_superblock(num_disks) != 0) {
-        // error reading superblock or mismatch in disk count
-        return -1;
+        return read_sb_res;
     }
 
     // check for valid mount point
@@ -358,15 +400,6 @@ int main(int argc, char** argv){
     // pass the program name as argv[0], the disks, and exclude -f and -s
     int fuse_argc = 0;
 
-    // count how many arguments will be passed to FUSE
-    for (int i = 0; i < argc; i++) {
-        if (strcmp(argv[i], "-s") == 0 || strcmp(argv[i], "-f") == 0) {
-            // skip flags
-            continue;
-        }
-        fuse_argc++;
-    }
-
     // prepare args for FUSE (skip flags)
     char *fuse_argv[fuse_argc];  // We need one extra for the program name
 
@@ -374,14 +407,13 @@ int main(int argc, char** argv){
     int fuse_index = 0;
 
     // fill fuse_argv with valid arguments
-    for (int i = 0; i < argc; i++) {
-        if (strcmp(argv[i], "-s") == 0 || strcmp(argv[i], "-f") == 0) {
-            // skip flags
-            continue;
-        }
+    for (int i = num_disks; i < argc; i++) {
+        printf("argv[%d]: %s\n", i, argv[i]);
         fuse_argv[fuse_index++] = argv[i];
+        fuse_argc++;
     }
 
+    fprintf(stdout, "wtf\n");
     // pass filtered arguments to FUSE
     return fuse_main(fuse_argc, fuse_argv, &ops, NULL);
 }
