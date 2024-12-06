@@ -170,7 +170,8 @@ struct wfs_inode* get_parent_inode(const char *path) {
 }*/
 
 /**
- * give an inode number, read an inode from disk
+ * give an inode number, read an inode from disk and store in the inode struct
+ * passed in
 */
 int read_inode_from_disk(int inode_num, struct wfs_inode *inode) {
     // 
