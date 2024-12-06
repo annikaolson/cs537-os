@@ -175,6 +175,7 @@ struct wfs_inode* get_parent_inode(const char *path) {
 */
 int read_inode_from_disk(int inode_num, struct wfs_inode *inode) {
     // 
+    return 0;
 }
 
 
@@ -397,24 +398,43 @@ int main(int argc, char** argv){
         return -1;
     }
 
-    // calculate the number of arguments to pass to FUSE
-    // pass the program name as argv[0], the disks, and exclude -f and -s
+    // prepare arguments for FUSE 
     int fuse_argc = 0;
 
-    // prepare args for FUSE (skip flags)
-    char *fuse_argv[fuse_argc];  // We need one extra for the program name
-
-    // initialize fuse_index for filling the fuse_argv
-    int fuse_index = 0;
-
-    // fill fuse_argv with valid arguments
-    for (int i = num_disks; i < argc; i++) {
-        printf("argv[%d]: %s\n", i, argv[i]);
-        fuse_argv[fuse_index++] = argv[i];
-        fuse_argc++;
+    // count the flags and the mount point argument
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-s") == 0 || strcmp(argv[i], "-f") == 0) {
+            fuse_argc++;
+        }
     }
 
-    fprintf(stdout, "wtf\n");
+    // one argument for the program name and one for the mount point
+    fuse_argc += 2;
+
+    // allocate fuse_argv with appropriate size
+    char *fuse_argv[fuse_argc];
+
+    // initialize fuse_argv with program name
+    int fuse_index = 0;
+    fuse_argv[fuse_index++] = argv[0];
+
+    // add flags (-s, -f)
+    for (int i = 1; i < argc - 1; i++) {
+        if (strcmp(argv[i], "-s") == 0 || strcmp(argv[i], "-f") == 0) {
+            fuse_argv[fuse_index++] = argv[i];
+        }
+    }
+
+    // add the mount point as the last argument
+    fuse_argv[fuse_index++] = argv[argc - 1];
+
+    // Debugging: print out arguments passed to FUSE
+    for (int i = 0; i < fuse_index; i++) {
+        printf("fuse_argv[%d] = %s\n", i, fuse_argv[i]);
+    }
+
+    printf("fuse_argc = %d\n", fuse_argc);
+
     // pass filtered arguments to FUSE
     return fuse_main(fuse_argc, fuse_argv, &ops, NULL);
 }
