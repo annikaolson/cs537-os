@@ -445,7 +445,105 @@ static int wfs_getattr(const char* path, struct stat* stbuf) {
  */
 static int wfs_mknod(const char *path, mode_t mode, dev_t dev) {
     printf("wfs_mknod called with path: %s\n", path);
-    return 0;
+    
+    char parent_path[MAX_NAME];
+    char file_name[MAX_NAME];
+
+    // Split path into parent path and file name
+    strncpy(parent_path, path, MAX_NAME);
+    char *last_slash = strrchr(parent_path, '/');
+    if (last_slash == NULL || last_slash == parent_path) {
+        // Root or invalid path
+        strncpy(file_name, path + 1, MAX_NAME);
+        strcpy(parent_path, "/");
+    } else {
+        strncpy(file_name, last_slash + 1, MAX_NAME - 1);
+        file_name[MAX_NAME - 1] = '\0';
+        *last_slash = '\0';
+    }
+
+    // Locate parent directory
+    int parent_inode_num = resolve_path(parent_path);
+    if (parent_inode_num < 0) {
+        return -ENOENT; // Parent directory doesn't exist
+    }
+
+    struct wfs_inode parent_inode;
+    read_inode(parent_inode_num, &parent_inode);
+
+    // Ensure parent is a directory
+    if (!S_ISDIR(parent_inode.mode)) {
+        return -ENOTDIR; // Parent is not a directory
+    }
+
+    // Check if file with the same name already exists
+    struct wfs_dentry entries[BLOCK_SIZE / sizeof(struct wfs_dentry)];
+    for (int i = 0; i < D_BLOCK; i++) {
+        if (parent_inode.blocks[i] != 0) {
+            read_data_block(parent_inode.blocks[i], entries);
+            for (int j = 0; j < BLOCK_SIZE / sizeof(struct wfs_dentry); j++) {
+                if (entries[j].num != 0 && strcmp(entries[j].name, file_name) == 0) {
+                    return -EEXIST; // File already exists
+                }
+            }
+        }
+    }
+
+    // Allocate an inode for the new special file
+    int new_inode_num = allocate_inode();
+    if (new_inode_num < 0) {
+        return -ENOSPC; // No space for new inode
+    }
+
+    struct wfs_inode new_inode = {0};
+    new_inode.num = new_inode_num;
+    new_inode.mode = mode;
+    new_inode.uid = getuid();
+    new_inode.gid = getgid();
+    new_inode.size = 0;
+    new_inode.nlinks = 1; // Single link to this inode
+    new_inode.atim = time(NULL);
+    new_inode.mtim = new_inode.atim;
+    new_inode.ctim = new_inode.atim;
+
+    // For special files, store the device information in a reserved data block field
+    if (S_ISCHR(mode) || S_ISBLK(mode)) {
+        new_inode.blocks[0] = (off_t)dev; // Store device ID in the first block field
+    }
+
+    // Write the inode to disk
+    write_inode(new_inode_num, &new_inode);
+
+    // Add the new entry to the parent directory
+    struct wfs_dentry new_entry = {0};
+    strncpy(new_entry.name, file_name, MAX_NAME);
+    new_entry.num = new_inode_num;
+
+    for (int i = 0; i < D_BLOCK; i++) {
+        if (parent_inode.blocks[i] == 0) {
+            // Allocate a new data block for the parent directory
+            parent_inode.blocks[i] = allocate_data_block();
+            if (parent_inode.blocks[i] < 0) {
+                return -ENOSPC; // No space for new data block
+            }
+            memset(entries, 0, BLOCK_SIZE);
+        } else {
+            read_data_block(parent_inode.blocks[i], entries);
+        }
+
+        // Find an empty slot in the directory block
+        for (int j = 0; j < BLOCK_SIZE / sizeof(struct wfs_dentry); j++) {
+            if (entries[j].num == 0) {
+                entries[j] = new_entry;
+                write_data_block(parent_inode.blocks[i], entries);
+                parent_inode.size += sizeof(struct wfs_dentry);
+                write_inode(parent_inode_num, &parent_inode);
+                return 0; // Success
+            }
+        }
+    }
+
+    return -ENOSPC; // No space in directory
 }
 
 /*
