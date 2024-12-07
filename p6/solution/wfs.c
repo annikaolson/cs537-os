@@ -116,6 +116,73 @@ int read_superblock(int num_disks) {
     return 0;   // success!
 }
 
+/*
+ * Helper function to read in an inode from the number
+ */
+void read_inode(int inode_num, struct wfs_inode *inode) {
+    // Read from the inode block (simulated as starting from a fixed position in the disk)
+    //memcpy(inode, &disk[superblock.i_blocks_ptr + inode_num * sizeof(struct wfs_inode)], sizeof(struct wfs_inode));
+}
+
+/*
+ * Helper function to read a directory entry from the disk
+ */
+void read_data_block(off_t block_num, struct wfs_dentry *entry) {
+    // directory entries are stored starting from a fixed position in the disk
+    //memcpy(entry, &disk[superblock.d_blocks_ptr + block_num * sizeof(struct wfs_dentry)], sizeof(struct wfs_dentry));
+}
+
+/*
+ * Resolve path into an inode
+ * 
+ * Returns the inode number or -
+ */
+int resolve_path(const char *path) {
+    char path_copy[MAX_NAME];
+
+    // copy path to avoid modifying the original
+    strncpy(path_copy, path, MAX_NAME);
+
+    // start at root directory (inode 0)
+    // root directory handling is built in
+    int current_inode_num = 0;
+    char *component = strtok(path_copy, "/");
+
+    while (component != NULL) {
+        struct wfs_inode dir_inode; // directory inode
+
+        // read the current inode
+        read_inode(current_inode_num, &dir_inode);
+        
+        // look up the component (file or directory) in the current directory's blocks
+        int found_inode = -1;
+        for (int i = 0; i < superblock.num_data_blocks; i++) {
+            struct wfs_dentry entry;
+            // read in the directory entry
+            read_data_block(dir_inode.blocks[i], &entry);
+
+            if (strcmp(entry.name, component) == 0) {
+                // found the component, return its inode number
+                found_inode = entry.num;
+                break;
+            }
+        }
+
+        // check if component was found
+        if (found_inode == -1) {
+            printf("Component not found: %s\n", component);
+            return -1;
+        }
+
+        current_inode_num = found_inode;
+
+        // continue to the next component
+        component = strtok(NULL, "/");
+    }
+
+    return current_inode_num;  // Return the inode number of the final component
+}
+
 // Lazy allocation of an inode
 int allocate_inode() {
     for (int i = 0; i < superblock.num_inodes; i++) {
@@ -156,30 +223,6 @@ int allocate_data_block() {
     return -1;  // No free data block available
 }
 
-/*
-struct wfs_inode* get_parent_inode(const char *path) {
-    // For simplicity, assume the parent is the root directory for now
-    struct wfs_inode *parent_inode = malloc(sizeof(struct wfs_inode));
-    parent_inode->num = 0;  // Root inode
-    parent_inode->size = 0;
-    parent_inode->nlinks = 1;
-    parent_inode->mode = S_IFDIR;
-    parent_inode->atim = parent_inode->mtim = parent_inode->ctim = time(NULL);
-    
-    return parent_inode;
-}*/
-
-/**
- * give an inode number, read an inode from disk and store in the inode struct
- * passed in
-*/
-int read_inode_from_disk(int inode_num, struct wfs_inode *inode) {
-    // 
-    return 0;
-}
-
-
-
 ////////////////////////
 // CALLBACK FUNCTIONS //
 ////////////////////////
@@ -203,6 +246,32 @@ int read_inode_from_disk(int inode_num, struct wfs_inode *inode) {
  */
 static int wfs_getattr(const char* path, struct stat* stbuf) {
     printf("wfs_getattr called with path: %s\n", path);
+    
+    // get the inode number from the path
+    int inode_num = resolve_path(path);
+
+    // check if the inode exists
+    if (inode_num < 0){
+        // file/directory does not exist 
+        return -ENOENT;
+    }
+
+    // get the inode from the inode number
+    struct wfs_inode inode;
+    read_inode(inode_num, &inode);
+
+    // fill in stat struct based on the inode
+    stbuf->st_ino = inode.num;          // Inode number
+    stbuf->st_mode = inode.mode;        // File type and permissions
+    stbuf->st_nlink = inode.nlinks;     // Number of hard links
+    stbuf->st_uid = inode.uid;          // User ID of the owner
+    stbuf->st_gid = inode.gid;          // Group ID of the owner
+    stbuf->st_size = inode.size;        // Size in bytes
+    stbuf->st_atime = inode.atim;       // Time of last access
+    stbuf->st_mtime = inode.mtim;       // Time of last modification
+    stbuf->st_ctime = inode.ctim;       // Time of last status change
+
+    // success
     return 0;
 }
 
