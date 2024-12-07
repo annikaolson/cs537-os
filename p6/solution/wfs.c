@@ -71,6 +71,9 @@ int read_superblock(int num_disks) {
         return -ENOENT;
     }
 
+    // assign the opened file pointer to disk_map for further use
+    disk_map = disk_file;
+
     // read superblock from first disk image; the superblock is at offset 0
     // fread() returns the number of elements read (1 - the superblock)
     // we are storing the superblock we read in the global superblock variable
@@ -112,7 +115,7 @@ int read_superblock(int num_disks) {
         }
     }
 
-    fclose(disk_file);
+    //fclose(disk_file);
     return 0;   // success!
 }
 
@@ -120,8 +123,7 @@ int read_superblock(int num_disks) {
  * Helper function to read in an inode from the number
  */
 void read_inode(int inode_num, struct wfs_inode *inode) {
-    // Read from the inode block (simulated as starting from a fixed position in the disk)
-    //memcpy(inode, &disk[superblock.i_blocks_ptr + inode_num * sizeof(struct wfs_inode)], sizeof(struct wfs_inode));
+    // calculate inode offset
     off_t inode_offset = superblock.i_blocks_ptr + inode_num * sizeof(struct wfs_inode);
 
     // seek to the inode location in the disk map
@@ -135,15 +137,26 @@ void read_inode(int inode_num, struct wfs_inode *inode) {
     if (elmts_read != 1) {
         fprintf(stderr, "Error reading inode\n");
     }
-
 }
 
 /*
  * Helper function to read a directory entry from the disk
  */
 void read_data_block(off_t block_num, struct wfs_dentry *entry) {
-    // directory entries are stored starting from a fixed position in the disk
-    //memcpy(entry, &disk[superblock.d_blocks_ptr + block_num * sizeof(struct wfs_dentry)], sizeof(struct wfs_dentry));
+    // calculate the offset for the data block
+    off_t block_offset = superblock.d_blocks_ptr + block_num * BLOCK_SIZE;
+
+    // seek to the data block location on the disk
+    if (fseek(disk_map, block_offset, SEEK_SET) != 0) {
+        fprintf(stderr, "Error seeking to data block %ld\n", block_num);
+        return;
+    }
+
+    // read the data block into the provided entry structure
+    size_t elmts_read = fread(entry, sizeof(struct wfs_dentry), 1, disk_map);
+    if (elmts_read != 1) {
+        fprintf(stderr, "Error reading data block %ld\n", block_num);
+    }
 }
 
 /*
@@ -197,44 +210,181 @@ int resolve_path(const char *path) {
     return current_inode_num;  // Return the inode number of the final component
 }
 
-// Lazy allocation of an inode
+/*
+ * Allocates spot for inode but doesn't initialize
+ * 
+ * Returns the allocated inode number or -1
+ */
 int allocate_inode() {
     for (int i = 0; i < superblock.num_inodes; i++) {
-        // Check if the inode is free in the inode bitmap
+        // check if the inode is free in the inode bitmap
         fseek(disk_map, superblock.i_bitmap_ptr + i / 8, SEEK_SET);
         unsigned char byte;
         fread(&byte, sizeof(byte), 1, disk_map);
         
-        if (!(byte & (1 << (i % 8)))) {  // If the bit is 0, the inode is free
-            // Mark the inode as allocated
+        // if the bit is 0, the inode is free
+        if (!(byte & (1 << (i % 8)))) {
+            // mark the inode as allocated
             byte |= (1 << (i % 8));
             fseek(disk_map, superblock.i_bitmap_ptr + i / 8, SEEK_SET);
             fwrite(&byte, sizeof(byte), 1, disk_map);
 
-            // Return the inode number instead of a fully initialized inode
+            // return the inode number instead of a fully initialized inode
             return i;
         }
     }
-    return -1;  // No free inode available
+    // no free inode available
+    return -1;
 }
 
-// Lazy allocation of a data block
+/*
+ * Allocates but doesn't initialize a new data block
+ *
+ * Returns the allocated block number or -1
+ */
 int allocate_data_block() {
     for (int i = 0; i < superblock.num_data_blocks; i++) {
         fseek(disk_map, superblock.d_bitmap_ptr + i / 8, SEEK_SET);
         unsigned char byte;
         fread(&byte, sizeof(byte), 1, disk_map);
 
-        if (!(byte & (1 << (i % 8)))) {  // Block is free if the corresponding bit is 0
-            // Mark the block as allocated
+        // block is free if the corresponding bit is 0
+        if (!(byte & (1 << (i % 8)))) {
+            // mark the block as allocated
             byte |= (1 << (i % 8));
             fseek(disk_map, superblock.d_bitmap_ptr + i / 8, SEEK_SET);
             fwrite(&byte, sizeof(byte), 1, disk_map);
             
-            return i;  // Return the index of the allocated block
+            // return the index of the allocated block
+            return i;
         }
     }
-    return -1;  // No free data block available
+    // no free data block available
+    return -1;
+}
+
+/*
+ * Writes a new inode to disk
+ */
+int write_inode(int inode_num, const struct wfs_inode *inode) {
+    if (inode_num < 0 || inode_num >= superblock.num_inodes) {
+        fprintf(stderr, "Invalid inode number: %d\n", inode_num);
+        return -1;
+    }
+
+    // Calculate the offset of the inode
+    off_t inode_offset = superblock.i_blocks_ptr + inode_num * sizeof(struct wfs_inode);
+
+    // Seek to the inode location
+    if (fseek(disk_map, inode_offset, SEEK_SET) != 0) {
+        fprintf(stderr, "Error seeking to inode offset\n");
+        return -1;
+    }
+
+    // Write the inode to disk
+    size_t written = fwrite(inode, sizeof(struct wfs_inode), 1, disk_map);
+    if (written != 1) {
+        fprintf(stderr, "Error writing inode\n");
+        return -1;
+    }
+
+    fflush(disk_map); // Ensure changes are flushed to disk
+    return 0;
+}
+
+/*
+ * Writes a new data block to disk
+ */
+int write_data_block(off_t block_num, const void *data) {
+    if (block_num < 0 || block_num >= superblock.num_data_blocks) {
+        fprintf(stderr, "Invalid block number: %ld\n", block_num);
+        return -1;
+    }
+
+    // Calculate the offset of the data block
+    off_t block_offset = superblock.d_blocks_ptr + block_num * BLOCK_SIZE;
+
+    // Seek to the block location
+    if (fseek(disk_map, block_offset, SEEK_SET) != 0) {
+        fprintf(stderr, "Error seeking to block offset\n");
+        return -1;
+    }
+
+    // Write the data block to disk
+    size_t written = fwrite(data, BLOCK_SIZE, 1, disk_map);
+    if (written != 1) {
+        fprintf(stderr, "Error writing data block\n");
+        return -1;
+    }
+
+    fflush(disk_map); // Ensure changes are flushed to disk
+    return 0;
+}
+
+/*
+ * Frees an inode by marking it as unused in the inode bitmap.
+ *
+ * inode_num: The inode number to free.
+ *
+ * Returns 0 on success, or -1 on failure.
+ */
+int free_inode(int inode_num) {
+    if (inode_num < 0 || inode_num >= superblock.num_inodes) {
+        fprintf(stderr, "Invalid inode number: %d\n", inode_num);
+        return -1;
+    }
+
+    // Locate the byte and bit for the inode in the bitmap
+    off_t byte_offset = superblock.i_bitmap_ptr + inode_num / 8;
+    int bit_position = inode_num % 8;
+
+    // Read the current byte from the bitmap
+    fseek(disk_map, byte_offset, SEEK_SET);
+    unsigned char byte;
+    fread(&byte, sizeof(byte), 1, disk_map);
+
+    // Clear the bit corresponding to the inode
+    byte &= ~(1 << bit_position);
+
+    // Write the updated byte back to the bitmap
+    fseek(disk_map, byte_offset, SEEK_SET);
+    fwrite(&byte, sizeof(byte), 1, disk_map);
+    fflush(disk_map);
+
+    return 0;
+}
+
+/*
+ * Frees a data block by marking it as unused in the data block bitmap.
+ *
+ * block_num: The block number to free.
+ *
+ * Returns 0 on success, or -1 on failure.
+ */
+int free_data_block(int block_num) {
+    if (block_num < 0 || block_num >= superblock.num_data_blocks) {
+        fprintf(stderr, "Invalid block number: %d\n", block_num);
+        return -1;
+    }
+
+    // Locate the byte and bit for the block in the bitmap
+    off_t byte_offset = superblock.d_bitmap_ptr + block_num / 8;
+    int bit_position = block_num % 8;
+
+    // Read the current byte from the bitmap
+    fseek(disk_map, byte_offset, SEEK_SET);
+    unsigned char byte;
+    fread(&byte, sizeof(byte), 1, disk_map);
+
+    // Clear the bit corresponding to the block
+    byte &= ~(1 << bit_position);
+
+    // Write the updated byte back to the bitmap
+    fseek(disk_map, byte_offset, SEEK_SET);
+    fwrite(&byte, sizeof(byte), 1, disk_map);
+    fflush(disk_map);
+
+    return 0;
 }
 
 ////////////////////////
@@ -323,13 +473,15 @@ static int wfs_mkdir(const char *path, mode_t mode) {
     }
 
     if (strlen(dir_name) == 0 || strlen(dir_name) >= MAX_NAME) {
-        return -EINVAL; // Invalid directory name
+        // invalid directory name
+        return -EINVAL;
     }
 
     // locate parent directory
     int parent_inode_num = resolve_path(parent_path);
     if (parent_inode_num < 0) {
-        return -ENOENT; // parent directory doesn't exist
+        // parent directory doesn't exist
+        return -ENOENT;
     }
 
     // get parent inode
@@ -338,23 +490,25 @@ static int wfs_mkdir(const char *path, mode_t mode) {
 
     // ensure the parent inode is a directory
     if (!S_ISDIR(parent_inode.mode)) {
-        return -ENOTDIR;    // parent is not a directory
+        // parent is not a directory
+        return -ENOTDIR;
     }
 
     // check for existing directory with same name
     struct wfs_dentry entries[BLOCK_SIZE / sizeof(struct wfs_dentry)];
-    int block_found;
+    int block_found = -1;
 
     for (int i = 0; i < D_BLOCK; i++) {
         if (parent_inode.blocks[i] != 0) {
             read_data_block(parent_inode.blocks[i], entries);
             for (int j = 0; j < BLOCK_SIZE / sizeof(struct wfs_dentry); j++) {
                 if (entries[j].num != 0 && strcmp(entries[j].name, dir_name) == 0) {
+                    // directory already exists
                     return -EEXIST;
                 }
             }
-        } else {
-            block_found = i;
+        } else if (block_found == -1) {
+            // directory doesn't exist yet
             break;
         }
     }
@@ -365,6 +519,81 @@ static int wfs_mkdir(const char *path, mode_t mode) {
         return -ENOSPC;
     }
     
+    // initialize the new directory inode
+    struct wfs_inode new_dir_inode = {0};
+    new_dir_inode.num = new_dir_inode_num;
+    new_dir_inode.mode = S_IFDIR | mode; // Directory with specified permissions
+    new_dir_inode.uid = getuid();        // Owner ID
+    new_dir_inode.gid = getgid();        // Group ID
+    new_dir_inode.size = 0;              // Empty directory
+    new_dir_inode.nlinks = 2;            // '.' and '..'
+    new_dir_inode.ctim = new_dir_inode.mtim = new_dir_inode.atim = time(NULL);
+
+    // allocate data block for the new directory
+    int new_block_num = allocate_data_block();
+    if (new_block_num < 0) {
+        free_inode(new_dir_inode_num); // rollback inode allocation
+        return -ENOSPC; // no space for data block
+    }
+    new_dir_inode.blocks[0] = new_block_num;
+
+    // create `.` and `..` entries in the new directory
+    struct wfs_dentry new_dir_entries[BLOCK_SIZE / sizeof(struct wfs_dentry)] = {0};
+    strcpy(new_dir_entries[0].name, ".");
+    new_dir_entries[0].num = new_dir_inode_num;
+    strcpy(new_dir_entries[1].name, "..");
+    new_dir_entries[1].num = parent_inode_num;
+
+    // write the data block to disk
+    write_data_block(new_block_num, new_dir_entries);
+
+    // write the new directory inode to disk
+    write_inode(new_dir_inode_num, &new_dir_inode);
+
+    // add the new directory entry to the parenty directory
+        int added = 0;
+    for (int i = 0; i < D_BLOCK && !added; i++) {
+        if (parent_inode.blocks[i] != 0) {
+            read_data_block(parent_inode.blocks[i], entries);
+            for (int j = 0; j < BLOCK_SIZE / sizeof(struct wfs_dentry); j++) {
+                if (entries[j].num == 0) {
+                    strcpy(entries[j].name, dir_name);
+                    entries[j].num = new_dir_inode_num;
+                    write_data_block(parent_inode.blocks[i], entries);
+                    added = 1;
+                    break;
+                }
+            }
+        } else if (block_found == i) {
+            int new_parent_block_num = allocate_data_block();
+            if (new_parent_block_num < 0) {
+                free_data_block(new_block_num);
+                free_inode(new_dir_inode_num);
+                return -ENOSPC;
+            }
+            parent_inode.blocks[i] = new_parent_block_num;
+
+            memset(entries, 0, sizeof(entries));
+            strcpy(entries[0].name, dir_name);
+            entries[0].num = new_dir_inode_num;
+
+            write_data_block(new_parent_block_num, entries);
+            added = 1;
+        }
+    }
+
+    if (!added) {
+        free_data_block(new_block_num); // Rollback
+        free_inode(new_dir_inode_num);
+        return -ENOSPC;
+    }
+
+    // update parent inode
+    parent_inode.nlinks++; // increment link count for parent directory
+    parent_inode.mtim = time(NULL); // update modification time
+    write_inode(parent_inode_num, &parent_inode);
+
+    return 0; // Success
 }
 
 /*
