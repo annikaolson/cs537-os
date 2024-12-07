@@ -55,7 +55,7 @@ int create_fs(int raid_mode, int num_inodes, int num_data_blocks, char **disks, 
     struct wfs_inode root_inode;
     memset(&root_inode, 0, sizeof(struct wfs_inode));
     root_inode.num = 0; // inode number for root
-    root_inode.mode = __S_IFDIR | 0755; // rwx permissions
+    root_inode.mode = S_IFDIR | 0755; // rwx permissions
     root_inode.uid = getuid();  // initial value nonzero
     root_inode.gid = getgid();  // initial value nonzero
     root_inode.size = 0;    // root inode should have size 0
