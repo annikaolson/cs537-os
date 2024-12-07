@@ -3,6 +3,6 @@ Traceback (most recent call last):
     fhs = [open(name, "wb") for name in filelist]
   File "/home/annikao/private/cs537/cs537-os/p6/tests/./read-write.py", line 19, in <listcomp>
     fhs = [open(name, "wb") for name in filelist]
-ConnectionAbortedError: [Errno 103] Software caused connection abort: 'file1'
-cat: mnt/file1: Transport endpoint is not connected
-diff: mnt/file1: Software caused connection abort
+FileNotFoundError: [Errno 2] No such file or directory: 'file1'
+cat: mnt/file1: No such file or directory
+diff: mnt/file1: No such file or directory
