@@ -1,7 +1,7 @@
 Traceback (most recent call last):
-  File "/home/annikao/private/cs537/cs537-os/p6/tests/./read-write.py", line 19, in <module>
+  File "/home/myranda/private/cs537/p4/cs537-os/p6/tests/./read-write.py", line 19, in <module>
     fhs = [open(name, "wb") for name in filelist]
-  File "/home/annikao/private/cs537/cs537-os/p6/tests/./read-write.py", line 19, in <listcomp>
+  File "/home/myranda/private/cs537/p4/cs537-os/p6/tests/./read-write.py", line 19, in <listcomp>
     fhs = [open(name, "wb") for name in filelist]
 FileNotFoundError: [Errno 2] No such file or directory: 'file1'
 cat: mnt/file1: No such file or directory

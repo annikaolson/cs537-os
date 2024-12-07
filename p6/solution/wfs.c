@@ -288,6 +288,20 @@ int write_inode(int inode_num, const struct wfs_inode *inode) {
         return -1;
     }
 
+    // seek superblock
+    if (fseek(disk_map, 0, SEEK_SET) != 0) {
+        fprintf(stderr, "Error seeking to superblock offset\n");
+        return -1;
+    }
+
+    // update superblock update num data blocks and write
+    ++superblock.num_inodes;
+    written = fwrite(&superblock, sizeof(struct wfs_sb), 1, disk_map);
+    if (written != 1) {
+        fprintf(stderr, "Error writing num data blocks to superblock\n");
+        return -1;
+    }
+
     fflush(disk_map); // Ensure changes are flushed to disk
     return 0;
 }
@@ -314,6 +328,20 @@ int write_data_block(off_t block_num, const void *data) {
     size_t written = fwrite(data, BLOCK_SIZE, 1, disk_map);
     if (written != 1) {
         fprintf(stderr, "Error writing data block\n");
+        return -1;
+    }
+
+    // seek superblock
+    if (fseek(disk_map, 0, SEEK_SET) != 0) {
+        fprintf(stderr, "Error seeking to superblock offset\n");
+        return -1;
+    }
+
+    // update superblock update num data blocks and write
+    ++superblock.num_data_blocks;
+    written = fwrite(&superblock, sizeof(struct wfs_sb), 1, disk_map);
+    if (written != 1) {
+        fprintf(stderr, "Error writing num data blocks to superblock\n");
         return -1;
     }
 
@@ -650,7 +678,7 @@ static int wfs_mkdir(const char *path, mode_t mode) {
     write_inode(new_dir_inode_num, &new_dir_inode);
 
     // add the new directory entry to the parenty directory
-        int added = 0;
+    int added = 0;
     for (int i = 0; i < D_BLOCK && !added; i++) {
         if (parent_inode.blocks[i] != 0) {
             read_data_block(parent_inode.blocks[i], entries);
