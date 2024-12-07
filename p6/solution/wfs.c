@@ -508,6 +508,7 @@ static int wfs_mkdir(const char *path, mode_t mode) {
                 }
             }
         } else if (block_found == -1) {
+            block_found = i;
             // directory doesn't exist yet
             break;
         }
