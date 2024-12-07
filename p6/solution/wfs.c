@@ -122,6 +122,20 @@ int read_superblock(int num_disks) {
 void read_inode(int inode_num, struct wfs_inode *inode) {
     // Read from the inode block (simulated as starting from a fixed position in the disk)
     //memcpy(inode, &disk[superblock.i_blocks_ptr + inode_num * sizeof(struct wfs_inode)], sizeof(struct wfs_inode));
+    off_t inode_offset = superblock.i_blocks_ptr + inode_num * sizeof(struct wfs_inode);
+
+    // seek to the inode location in the disk map
+    if (fseek(disk_map, inode_offset, SEEK_SET) != 0) {
+        fprintf(stderr, "Error seeking to inode\n");
+        return;
+    }
+
+    // read inode data into inode struct
+    size_t elmts_read = fread(inode, sizeof(struct wfs_inode), 1, disk_map);
+    if (elmts_read != 1) {
+        fprintf(stderr, "Error reading inode\n");
+    }
+
 }
 
 /*
@@ -291,44 +305,66 @@ static int wfs_mknod(const char *path, mode_t mode, dev_t dev) {
  * This function is needed for any reasonable read/write filesystem.
  */
 static int wfs_mkdir(const char *path, mode_t mode) {
-    /*
-    // Get the parent inode for the directory (simplified, assuming it's the root for now)
-    struct wfs_inode *parent_inode = get_parent_inode(path);
-    if (!parent_inode) {
-        fprintf(stderr, "Error: Parent directory not found.\n");
-        return -1;
+    printf("wfs_mkdir called with path: %s\n", path);
+
+    char parent_path[MAX_NAME];
+    char dir_name[MAX_NAME];
+
+    // split path into parent path and directory name
+    strncpy(parent_path, path, MAX_NAME);
+    char *last_slash = strrchr(parent_path, '/');
+    if (last_slash == NULL || last_slash == parent_path) {
+        // root or invalid path
+        strncpy(dir_name, path + 1, MAX_NAME);
+        strcpy(parent_path, "/");
+    } else {
+        strcpy(dir_name, last_slash + 1);
+        *last_slash = '\0';
     }
 
-    // Allocate a new inode for the directory using lazy allocation
-    int inode_num = allocate_inode();
-    if (inode_num == -1) {
-        fprintf(stderr, "Error: No available inodes.\n");
-        return -1;
+    if (strlen(dir_name) == 0 || strlen(dir_name) >= MAX_NAME) {
+        return -EINVAL; // Invalid directory name
     }
 
-    // Allocate a data block for the new directory using lazy allocation
-    int data_block = allocate_data_block();
-    if (data_block == -1) {
-        fprintf(stderr, "Error: No free data blocks.\n");
-        return -1;
+    // locate parent directory
+    int parent_inode_num = resolve_path(parent_path);
+    if (parent_inode_num < 0) {
+        return -ENOENT; // parent directory doesn't exist
     }
 
-    // Initialize the new directory entry
-    struct wfs_dentry new_entry;
-    strncpy(new_entry.name, "new_directory", MAX_NAME);
-    new_entry.num = inode_num;
+    // get parent inode
+    struct wfs_inode parent_inode;
+    read_inode(parent_inode_num, &parent_inode);
 
-    // Add the new directory entry to the parent inode's data block
-    fseek(disk_map, parent_inode->blocks[0], SEEK_SET);
-    fwrite(&new_entry, sizeof(new_entry), 1, disk_map);
+    // ensure the parent inode is a directory
+    if (!S_ISDIR(parent_inode.mode)) {
+        return -ENOTDIR;    // parent is not a directory
+    }
 
-    // Update the parent directory inode (increment link count, modify timestamps)
-    parent_inode->nlinks++;
-    parent_inode->mtim = time(NULL);
+    // check for existing directory with same name
+    struct wfs_dentry entries[BLOCK_SIZE / sizeof(struct wfs_dentry)];
+    int block_found;
 
-    // For lazy allocation, we don't initialize the new inode yet. It will be done later.
-    */
-    return 0;
+    for (int i = 0; i < D_BLOCK; i++) {
+        if (parent_inode.blocks[i] != 0) {
+            read_data_block(parent_inode.blocks[i], entries);
+            for (int j = 0; j < BLOCK_SIZE / sizeof(struct wfs_dentry); j++) {
+                if (entries[j].num != 0 && strcmp(entries[j].name, dir_name) == 0) {
+                    return -EEXIST;
+                }
+            }
+        } else {
+            block_found = i;
+            break;
+        }
+    }
+
+    // allocate inode for new directory
+    int new_dir_inode_num = allocate_inode();
+    if (new_dir_inode_num < 0) {
+        return -ENOSPC;
+    }
+    
 }
 
 /*
@@ -497,12 +533,13 @@ int main(int argc, char** argv){
     // add the mount point as the last argument
     fuse_argv[fuse_index++] = argv[argc - 1];
 
+    /*
     // Debugging: print out arguments passed to FUSE
     for (int i = 0; i < fuse_index; i++) {
         printf("fuse_argv[%d] = %s\n", i, fuse_argv[i]);
     }
 
-    printf("fuse_argc = %d\n", fuse_argc);
+    printf("fuse_argc = %d\n", fuse_argc);*/
 
     // pass filtered arguments to FUSE
     return fuse_main(fuse_argc, fuse_argv, &ops, NULL);
