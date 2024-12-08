@@ -600,8 +600,23 @@ static int wfs_mkdir(const char *path, mode_t mode) {
 
     struct wfs_dentry dentries[DENTRIES_PER_BLOCK];
     for (int i = 0; i < N_BLOCKS - 1; i++) {
-        // allocate data block if needed
-        if (parent_inode.blocks[i] == 0) {
+        int index = parent_inode.blocks[i];
+        int byte_index = index / 8; // Byte index in the bitmap
+        int bit_index = index % 8;  // Bit position within the byte
+
+        // calculate the size of the data block bitmap in bytes
+        int bitmap_size = (superblock.num_data_blocks + 7) / 8;
+
+        // buffer for the data block bitmap
+        char bitmap[bitmap_size];
+
+        // read the data block bitmap
+        read_metadata(superblock.d_bitmap_ptr, bitmap, bitmap_size);
+
+        // check if bitmap is allocated for that spot
+        // or if data block is "zero" but not root node
+        if (!(bitmap[byte_index] & (1 << bit_index))
+            || (index == 0 && parent_inode_num != 0)) {
             parent_inode.blocks[i] = allocate_data_block();
             if (parent_inode.blocks[i] < 0) {
                 // return error if no blocks available
