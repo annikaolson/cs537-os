@@ -1,2 +1,1 @@
-Correct
-allocated datablocks on /tmp/myranda/test-disk1: found 4 expected 2
+[Errno 28] No space left on device: 'd2'

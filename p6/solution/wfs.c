@@ -43,7 +43,6 @@ static struct fuse_operations ops = {
 /////////////////////////////
 static struct wfs_sb superblock;
 static char disks[10][MAX_NAME];
-int disk_fd;
 
 //////////////////////
 // HELPER FUNCTIONS //
@@ -113,7 +112,6 @@ int read_superblock(int num_disks) {
 
     fclose(disk_file);
 
-    disk_fd = open(disks[0], O_RDWR);
     return 0;   // success!
 }
 
@@ -121,12 +119,10 @@ int read_superblock(int num_disks) {
  * Function to read from metadata
  */
 void read_metadata(off_t offset, void* buffer, size_t size){
-    close(disk_fd);
     int fd = open(disks[0], O_RDWR);
     lseek(fd, offset, SEEK_SET);
     read(fd, buffer, size);
     close(fd);
-    disk_fd = open(disks[0], O_RDWR);
 }
 
 /*
@@ -134,14 +130,12 @@ void read_metadata(off_t offset, void* buffer, size_t size){
  */
 void write_metadata(off_t offset, const void* buffer, size_t size){
     int fd;
-    close(disk_fd);
     for (int i = 0; i < superblock.num_disks; i++) {
         fd = open(disks[i], O_RDWR);
         lseek(fd, offset, SEEK_SET);
         write(fd, buffer, size);
         close(fd);
     }
-    disk_fd = open(disks[0], O_RDWR);
 }
 
 /*
@@ -177,12 +171,10 @@ void read_disk(off_t offset, void* buffer, size_t size){
     }
     // Raid 1: all data mirrored
     else if (raid_mode == 1) {
-            close(disk_fd);
             int fd = open(disks[0], O_RDWR);
-            lseek(disk_fd, offset, SEEK_SET);
-            read(disk_fd, buffer, size);
+            lseek(fd, offset, SEEK_SET);
+            read(fd, buffer, size);
             close(fd);
-            disk_fd = open(disks[0], O_RDWR);
     }
     // Raid 1v: compare all copies of data on different disks
     // Returns the data block present on the majority of disks
@@ -360,21 +352,15 @@ int allocate_data_block(int block_number) {
         // mark the bit as allocated
         bitmap[byte_index] |= (1 << bit_index);
 
-        // seek back to the data block bitmap's location
-        lseek(disk_fd, superblock.d_bitmap_ptr, SEEK_SET);
-
         // write the updated bitmap back to disk
-        write(disk_fd, bitmap, bitmap_size);
-        //write_metadata(superblock.d_bitmap_ptr, bitmap, bitmap_size);
+        write_metadata(superblock.d_bitmap_ptr, bitmap, bitmap_size);
 
 
         // initialize the new data block to zero
         char zero_block[BLOCK_SIZE] = {0};
 
         // Write the initialized data block to disk
-        lseek(disk_fd, superblock.d_blocks_ptr + (block_number * BLOCK_SIZE), SEEK_SET);
-        write(disk_fd, zero_block, BLOCK_SIZE);
-        //write_metadata(superblock.d_blocks_ptr + (block_number * BLOCK_SIZE), zero_block, BLOCK_SIZE);
+        write_metadata(superblock.d_blocks_ptr + (block_number * BLOCK_SIZE), zero_block, BLOCK_SIZE);
 
         // success
         return 0;
@@ -391,8 +377,7 @@ int read_data_block(int block_num, void *buffer) {
         return -EINVAL; // Invalid block number
     }
 
-    lseek(disk_fd, superblock.d_blocks_ptr + (block_num * BLOCK_SIZE), SEEK_SET);
-    read(disk_fd, buffer, BLOCK_SIZE);
+    read_metadata(superblock.d_blocks_ptr + (block_num * BLOCK_SIZE), buffer, BLOCK_SIZE);
 
     return 0; // Success
 }
@@ -405,10 +390,7 @@ int write_data_block(int block_num, const void *buffer) {
         return -EINVAL; // Invalid block number
     }
 
-    lseek(disk_fd, superblock.d_blocks_ptr + (block_num * BLOCK_SIZE), SEEK_SET);
-    write(disk_fd, buffer, BLOCK_SIZE);
-
-
+    write_disk(superblock.d_blocks_ptr + (block_num * BLOCK_SIZE), buffer, BLOCK_SIZE);
 
     return 0; // Success
 }
@@ -631,9 +613,15 @@ static int wfs_mkdir(const char *path, mode_t mode) {
 
                 // initialize the new inode
                 struct wfs_inode new_inode = {0};
+                new_inode.num = dentries[j].num;
                 new_inode.mode = S_IFDIR | mode;  // Directory mode + requested permissions
+                new_inode.uid = getuid();  // initial value nonzero
+                new_inode.gid = getgid();  // initial value nonzero
+                new_inode.size = 0; // initial size 0
+                time(&new_inode.atim);
+                new_inode.mtim = new_inode.atim;
+                new_inode.ctim = new_inode.atim;
                 new_inode.nlinks = 2;  // At least 2 links for a new directory (one for "." and one for "..")
-                new_inode.mtim = time(NULL);  // Set modification time to current time
 
                 // write the new inode to disk
                 write_inode(dentries[j].num, new_inode);
