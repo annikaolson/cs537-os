@@ -1,1 +1,2 @@
-[Errno 28] No space left on device: 'd2'
+Correct
+allocated datablocks on /tmp/myranda/test-disk1: found 3 expected 2

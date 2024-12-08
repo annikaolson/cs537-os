@@ -333,9 +333,9 @@ int write_inode(int inode_num, struct wfs_inode inode) {
 /*
  * Allocate and initializes a new data block
  *
- * Returns pass or fail
+ * Returns data block number or -ENOSPC
  */
-int allocate_data_block(int block_number) {
+int allocate_data_block() {
     // calculate the size of the data block bitmap in bytes
     int bitmap_size = (superblock.num_data_blocks + 7) / 8;
 
@@ -345,25 +345,29 @@ int allocate_data_block(int block_number) {
     // read the data block bitmap
     read_metadata(superblock.d_bitmap_ptr, bitmap, bitmap_size);
 
-    int byte_index = block_number / 8; // byte index in the bitmap
-    int bit_index = block_number % 8;  // bit position within the byte
+    // iterate over bitmap to find first free block
+    for (int byte_index = 0; byte_index < bitmap_size; ++byte_index) {
+        for (int bit_index = 0; bit_index < 8; ++bit_index) {
+            if (!(bitmap[byte_index] & (1 << bit_index))) {
+                // Mark the bit as allocated
+                bitmap[byte_index] |= (1 << bit_index);
 
-    if (!(bitmap[byte_index] & (1 << bit_index))) {
-        // mark the bit as allocated
-        bitmap[byte_index] |= (1 << bit_index);
+                // Write the updated bitmap back to disk
+                write_metadata(superblock.d_bitmap_ptr, bitmap, bitmap_size);
 
-        // write the updated bitmap back to disk
-        write_metadata(superblock.d_bitmap_ptr, bitmap, bitmap_size);
+                // Calculate the block number
+                int block_number = byte_index * 8 + bit_index;
 
+                // initialize the new data block to zero
+                char zero_block[BLOCK_SIZE] = {0};
 
-        // initialize the new data block to zero
-        char zero_block[BLOCK_SIZE] = {0};
+                // Write the initialized data block to disk
+                write_metadata(superblock.d_blocks_ptr + (block_number * BLOCK_SIZE), zero_block, BLOCK_SIZE);
 
-        // Write the initialized data block to disk
-        write_metadata(superblock.d_blocks_ptr + (block_number * BLOCK_SIZE), zero_block, BLOCK_SIZE);
-
-        // success
-        return 0;
+                // Return the allocated block number
+                return block_number;
+            }
+        }
     }
 
     return -ENOSPC; // No free data blocks available
@@ -377,7 +381,7 @@ int read_data_block(int block_num, void *buffer) {
         return -EINVAL; // Invalid block number
     }
 
-    read_metadata(superblock.d_blocks_ptr + (block_num * BLOCK_SIZE), buffer, BLOCK_SIZE);
+    read_disk(superblock.d_blocks_ptr + (block_num * BLOCK_SIZE), buffer, BLOCK_SIZE);
 
     return 0; // Success
 }
@@ -431,7 +435,7 @@ int resolve_path(const char *path) {
         for (int i = 0; i < N_BLOCKS - 1; i++) {
             struct wfs_dentry entry[DENTRIES_PER_BLOCK]; // size is BLOCK_SIZE
             // read in the directory entry
-            if (read_data_block(dir_inode.blocks[i], &entry) < 0){
+            if (read_data_block(dir_inode.blocks[i], entry) < 0){
                 return -EINVAL;
             }
 
@@ -539,27 +543,23 @@ static int wfs_mknod(const char *path, mode_t mode, dev_t dev) {
 static int wfs_mkdir(const char *path, mode_t mode) {
     printf("wfs_mkdir called with path: %s\n", path);
 
-    char parent_path[MAX_NAME];
-    char dir_name[MAX_NAME];
-
-    // split path into parent path and directory name
-    strncpy(parent_path, path, MAX_NAME);
-    parent_path[MAX_NAME - 1] = '\0'; // Ensure null-termination
-
-    char *last_slash = strrchr(parent_path, '/');
-    if (last_slash == NULL || last_slash == parent_path) {
-        strncpy(dir_name, path + 1, MAX_NAME - 1);
-        dir_name[MAX_NAME - 1] = '\0';
-        strcpy(parent_path, "/");
-    } else {
-        strncpy(dir_name, last_slash + 1, MAX_NAME - 1);
-        dir_name[MAX_NAME - 1] = '\0';
-        *last_slash = '\0';
+    if (!path || strlen(path) == 0) {
+        return -EINVAL;  // Invalid path
     }
 
-    if (strlen(dir_name) == 0 || strlen(dir_name) >= MAX_NAME) {
-        // invalid directory name
-        return -EINVAL;
+    // Make a temporary copy of the path
+    char path_copy[strlen(path) + 1];
+    strcpy(path_copy, path);
+
+    // Extract the parent path and directory name
+    char *parent_path = dirname(path_copy);
+    char path_copy2[strlen(path) + 1];
+    strcpy(path_copy2, path);
+    char *dir_name = basename(path_copy2);
+
+    // Validate parent path and directory name
+    if (!parent_path || !dir_name || strlen(dir_name) == 0) {
+        return -EINVAL;  // Invalid components
     }
 
     int parent_inode_num = resolve_path(parent_path);
@@ -583,14 +583,15 @@ static int wfs_mkdir(const char *path, mode_t mode) {
     for (int i = 0; i < N_BLOCKS - 1; i++) {
         // allocate data block if needed
         if (parent_inode.blocks[i] == 0) {
-            if (allocate_data_block(i) < 0) {
+            parent_inode.blocks[i] = allocate_data_block();
+            if (parent_inode.blocks[i] < 0) {
                 // return error if no blocks available
                 return -ENOSPC;
             }
         }
 
         // data block was or now is allocated
-        if (read_data_block(parent_inode.blocks[i], &dentries) < 0) {
+        if (read_data_block(parent_inode.blocks[i], dentries) < 0) {
             return -EINVAL;
         }
 
@@ -624,17 +625,14 @@ static int wfs_mkdir(const char *path, mode_t mode) {
                 new_inode.nlinks = 2;  // At least 2 links for a new directory (one for "." and one for "..")
 
                 // write the new inode to disk
-                write_inode(dentries[j].num, new_inode);
+                write_inode(new_inode.num, new_inode);
 
                 // write the new directory to the parent
-                if (write_data_block(parent_inode.blocks[i], dentries) < 0) {
-                    return -EINVAL;
-                }
-
-                // update the parent inode
                 parent_inode.nlinks++;
                 parent_inode.mtim = time(NULL);
-                return write_inode(parent_inode_num, parent_inode);
+                write_inode(parent_inode_num, parent_inode);
+
+                return write_data_block(parent_inode.blocks[i], dentries);
             }
         }
     }
