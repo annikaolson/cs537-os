@@ -238,23 +238,42 @@ void write_disk(off_t offset, const void* buffer, size_t size) {
         size_t bytes_remaining = size;
         size_t buffer_offset = 0;
 
-        while (bytes_remaining > 0) {
-            int disk_index = (offset / BLOCK_SIZE) % superblock.num_disks;
-            off_t disk_offset = (offset / (BLOCK_SIZE * superblock.num_disks)) * BLOCK_SIZE + (offset % BLOCK_SIZE);
+        // Calculate the starting stripe index and offset within the stripe
+        size_t stripe_index = offset / BLOCK_SIZE;
+        size_t block_offset = offset % BLOCK_SIZE;
 
-            size_t chunk_size = BLOCK_SIZE - (offset % BLOCK_SIZE);
+        while (bytes_remaining > 0) {
+            // Determine the current disk and disk offset
+            int disk_index = stripe_index % superblock.num_disks;
+            off_t disk_offset = (stripe_index / superblock.num_disks) * BLOCK_SIZE;
+
+            // Calculate the amount of data to write for this stripe
+            size_t chunk_size = BLOCK_SIZE - block_offset;
             if (chunk_size > bytes_remaining) {
                 chunk_size = bytes_remaining;
             }
 
+            // Open the disk file
             fd = open(disks[disk_index], O_RDWR);
-            lseek(fd, disk_offset, SEEK_SET);
-            write(fd, (char*)buffer + buffer_offset, chunk_size);
+
+            // Seek to the correct position on the disk
+            lseek(fd, disk_offset + block_offset, SEEK_SET);
+
+            // Write the data to the disk
+            write(fd, (char *)buffer + buffer_offset, chunk_size);
             close(fd);
 
+            // Update counters and offsets
             bytes_remaining -= chunk_size;
             buffer_offset += chunk_size;
-            offset += chunk_size;
+
+            // Advance to the next stripe
+            if (block_offset + chunk_size == BLOCK_SIZE) {
+                stripe_index++;
+                block_offset = 0;
+            } else {
+                block_offset += chunk_size;
+            }
         }
     }
     // Raid 1 or 1v: all data is mirrored
@@ -353,7 +372,7 @@ int allocate_data_block() {
                 bitmap[byte_index] |= (1 << bit_index);
 
                 // Write the updated bitmap back to disk
-                write_metadata(superblock.d_bitmap_ptr, bitmap, bitmap_size);
+                write_disk(superblock.d_bitmap_ptr, bitmap, bitmap_size);
 
                 // Calculate the block number
                 int block_number = byte_index * 8 + bit_index;
@@ -362,7 +381,7 @@ int allocate_data_block() {
                 char zero_block[BLOCK_SIZE] = {0};
 
                 // Write the initialized data block to disk
-                write_metadata(superblock.d_blocks_ptr + (block_number * BLOCK_SIZE), zero_block, BLOCK_SIZE);
+                write_disk(superblock.d_blocks_ptr + (block_number * BLOCK_SIZE), zero_block, BLOCK_SIZE);
 
                 // Return the allocated block number
                 return block_number;
@@ -612,6 +631,9 @@ static int wfs_mkdir(const char *path, mode_t mode) {
                     return -EINVAL;
                 }
 
+                // write dentry to disk
+                write_data_block(parent_inode.blocks[i], dentries);
+
                 // initialize the new inode
                 struct wfs_inode new_inode = {0};
                 new_inode.num = dentries[j].num;
@@ -627,12 +649,11 @@ static int wfs_mkdir(const char *path, mode_t mode) {
                 // write the new inode to disk
                 write_inode(new_inode.num, new_inode);
 
-                // write the new directory to the parent
+                // update the parent
                 parent_inode.nlinks++;
                 parent_inode.mtim = time(NULL);
-                write_inode(parent_inode_num, parent_inode);
 
-                return write_data_block(parent_inode.blocks[i], dentries);
+                return write_inode(parent_inode_num, parent_inode);
             }
         }
     }
