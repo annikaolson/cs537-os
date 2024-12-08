@@ -118,31 +118,162 @@ int read_superblock(int num_disks) {
 }
 
 /*
- * Function to read from disk based on raid mode
+ * Function to read from metadata
  */
 void read_metadata(off_t offset, void* buffer, size_t size){
-    
+    close(disk_fd);
+    int fd = open(disks[0], O_RDWR);
+    lseek(fd, offset, SEEK_SET);
+    read(fd, buffer, size);
+    close(fd);
+    disk_fd = open(disks[0], O_RDWR);
 }
 
 /*
- * Function to read from disk based on raid mode
+ * Function to write metadata
  */
-void write_metadata(off_t offset, void* buffer, size_t size){
-
+void write_metadata(off_t offset, const void* buffer, size_t size){
+    int fd;
+    close(disk_fd);
+    for (int i = 0; i < superblock.num_disks; i++) {
+        fd = open(disks[i], O_RDWR);
+        lseek(fd, offset, SEEK_SET);
+        write(fd, buffer, size);
+        close(fd);
+    }
+    disk_fd = open(disks[0], O_RDWR);
 }
 
 /*
  * Function to read from disk based on raid mode
  */
 void read_disk(off_t offset, void* buffer, size_t size){
+    int raid_mode = superblock.raid_mode;
+    int fd;
 
+    // Raid 0: read from disk in round robin fashion
+    if (raid_mode == 0) {
+        size_t bytes_remaining = size;
+        size_t buffer_offset = 0;
+
+        while (bytes_remaining > 0) {
+            int disk_index = (offset / BLOCK_SIZE) % superblock.num_disks;
+            off_t disk_offset = (offset / (BLOCK_SIZE * superblock.num_disks)) * BLOCK_SIZE + (offset % BLOCK_SIZE);
+
+            size_t chunk_size = BLOCK_SIZE - (offset % BLOCK_SIZE);
+            if (chunk_size > bytes_remaining) {
+                chunk_size = bytes_remaining;
+            }
+
+            fd = open(disks[disk_index], O_RDWR);
+            lseek(fd, disk_offset, SEEK_SET);
+            read(fd, (char*)buffer + buffer_offset, chunk_size);
+            close(fd);
+
+            bytes_remaining -= chunk_size;
+            buffer_offset += chunk_size;
+            offset += chunk_size;
+        }
+    }
+    // Raid 1: all data mirrored
+    else if (raid_mode == 1) {
+            close(disk_fd);
+            int fd = open(disks[0], O_RDWR);
+            lseek(disk_fd, offset, SEEK_SET);
+            read(disk_fd, buffer, size);
+            close(fd);
+            disk_fd = open(disks[0], O_RDWR);
+    }
+    // Raid 1v: compare all copies of data on different disks
+    // Returns the data block present on the majority of disks
+    // In case of tie, return the data block with a lower index
+    else if (raid_mode == 2) {
+        char temp_buffers[superblock.num_disks][BLOCK_SIZE];
+        int votes[superblock.num_disks];
+        memset(votes, 0, sizeof(votes));
+
+        size_t bytes_remaining = size;
+        size_t buffer_offset = 0;
+
+        while (bytes_remaining > 0) {
+            size_t chunk_size = bytes_remaining > BLOCK_SIZE ? BLOCK_SIZE : bytes_remaining;
+
+            // Read from all disks and verify
+            for (int i = 0; i < superblock.num_disks; i++) {
+                fd = open(disks[i], O_RDWR);
+                lseek(fd, offset, SEEK_SET);
+                read(fd, temp_buffers[i], chunk_size);
+                close(fd);
+            }
+
+            // Compare blocks for majority vote
+            for (int i = 0; i < superblock.num_disks; i++) {
+                for (int j = 0; j < superblock.num_disks; j++) {
+                    if (memcmp(temp_buffers[i], temp_buffers[j], chunk_size) == 0) {
+                        votes[i]++;
+                    }
+                }
+            }
+
+            // Find majority
+            int majority_index = 0;
+            for (int i = 1; i < superblock.num_disks; i++) {
+                if (votes[i] > votes[majority_index] ||
+                    (votes[i] == votes[majority_index] && i < majority_index)) {
+                    majority_index = i;
+                }
+            }
+
+            // Copy the majority data
+            memcpy((char*)buffer + buffer_offset, temp_buffers[majority_index], chunk_size);
+
+            bytes_remaining -= chunk_size;
+            buffer_offset += chunk_size;
+            offset += chunk_size;
+        }
+    }
 }
 
 /*
  * Function to write to disk based on raid mode
  */
-void write_disk(off_t offset, void* buffer, size_t size) {
+void write_disk(off_t offset, const void* buffer, size_t size) {
+    int raid_mode = superblock.raid_mode;
+    int fd;
 
+    // Raid 0: write to disks in round robin fashion
+    if (raid_mode == 0) {
+        size_t bytes_remaining = size;
+        size_t buffer_offset = 0;
+
+        while (bytes_remaining > 0) {
+            int disk_index = (offset / BLOCK_SIZE) % superblock.num_disks;
+            off_t disk_offset = (offset / (BLOCK_SIZE * superblock.num_disks)) * BLOCK_SIZE + (offset % BLOCK_SIZE);
+
+            size_t chunk_size = BLOCK_SIZE - (offset % BLOCK_SIZE);
+            if (chunk_size > bytes_remaining) {
+                chunk_size = bytes_remaining;
+            }
+
+            fd = open(disks[disk_index], O_RDWR);
+            lseek(fd, disk_offset, SEEK_SET);
+            write(fd, (char*)buffer + buffer_offset, chunk_size);
+            close(fd);
+
+            bytes_remaining -= chunk_size;
+            buffer_offset += chunk_size;
+            offset += chunk_size;
+        }
+    }
+    // Raid 1 or 1v: all data is mirrored
+    else if (raid_mode == 1 || raid_mode == 2) {
+        for (int i = 0; i < superblock.num_disks; i++) {
+            fd = open(disks[i], O_RDWR);
+            lseek(fd, offset, SEEK_SET);
+            write(fd, buffer, size);
+            close(fd);
+        }
+    }
 }
 
 /*
@@ -157,11 +288,8 @@ int allocate_inode() {
     // buffer for the inode bitmap
     char bitmap[bitmap_size];
 
-    // seek to the inode bitmap's location
-    lseek(disk_fd, superblock.i_bitmap_ptr, SEEK_SET);
-
     // read the inode bitmap
-    read(disk_fd, bitmap, bitmap_size);
+    read_metadata(superblock.i_bitmap_ptr, bitmap, bitmap_size);
 
     // search for a free bit in the bitmap
     for (int i = 0; i < superblock.num_inodes; i++) {
@@ -172,11 +300,8 @@ int allocate_inode() {
             // mark the bit as allocated
             bitmap[byte_index] |= (1 << bit_index);
 
-            // seek back to the inode bitmap's location
-            lseek(disk_fd, superblock.i_bitmap_ptr, SEEK_SET);
-
             // write the updated bitmap back to disk
-            write(disk_fd, bitmap, bitmap_size);
+            write_metadata(superblock.i_bitmap_ptr, bitmap, bitmap_size);
 
             // return the allocated inode number
             return i;
@@ -195,8 +320,7 @@ int read_inode(int inode_num, struct wfs_inode *inode) {
         return -EINVAL; // Invalid inode number
     }
 
-    lseek(disk_fd, superblock.i_blocks_ptr + (inode_num * BLOCK_SIZE), SEEK_SET);
-    read(disk_fd, inode, sizeof(struct wfs_inode));
+    read_metadata(superblock.i_blocks_ptr + (inode_num * BLOCK_SIZE), inode, sizeof(struct wfs_inode));
 
     return 0; // Success
 }
@@ -209,8 +333,7 @@ int write_inode(int inode_num, struct wfs_inode inode) {
         return -EINVAL; // Invalid inode number
     }
 
-    lseek(disk_fd, superblock.i_blocks_ptr + (inode_num * BLOCK_SIZE), SEEK_SET);
-    write(disk_fd, &inode, sizeof(struct wfs_inode));
+    write_metadata(superblock.i_blocks_ptr + (inode_num * BLOCK_SIZE), &inode, sizeof(struct wfs_inode));
 
     return 0; // Success
 }
@@ -227,11 +350,8 @@ int allocate_data_block(int block_number) {
     // buffer for the data block bitmap
     char bitmap[bitmap_size];
 
-    // seek to the data block bitmap's location
-    lseek(disk_fd, superblock.d_bitmap_ptr, SEEK_SET);
-
     // read the data block bitmap
-    read(disk_fd, bitmap, bitmap_size);
+    read_metadata(superblock.d_bitmap_ptr, bitmap, bitmap_size);
 
     int byte_index = block_number / 8; // byte index in the bitmap
     int bit_index = block_number % 8;  // bit position within the byte
@@ -245,6 +365,8 @@ int allocate_data_block(int block_number) {
 
         // write the updated bitmap back to disk
         write(disk_fd, bitmap, bitmap_size);
+        //write_metadata(superblock.d_bitmap_ptr, bitmap, bitmap_size);
+
 
         // initialize the new data block to zero
         char zero_block[BLOCK_SIZE] = {0};
@@ -252,6 +374,7 @@ int allocate_data_block(int block_number) {
         // Write the initialized data block to disk
         lseek(disk_fd, superblock.d_blocks_ptr + (block_number * BLOCK_SIZE), SEEK_SET);
         write(disk_fd, zero_block, BLOCK_SIZE);
+        //write_metadata(superblock.d_blocks_ptr + (block_number * BLOCK_SIZE), zero_block, BLOCK_SIZE);
 
         // success
         return 0;

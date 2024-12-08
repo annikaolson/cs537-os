@@ -1,2 +1,2 @@
 Correct
-allocated inodes on /tmp/myranda/test-disk2: found 1 expected 2
+allocated datablocks on /tmp/myranda/test-disk2: found 0 expected 1
