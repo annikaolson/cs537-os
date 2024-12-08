@@ -1,1 +1,2 @@
-[Errno 2] No such file or directory
+Correct
+allocated datablocks on /tmp/myranda/test-disk1: found 1 expected 2

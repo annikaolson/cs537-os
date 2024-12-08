@@ -1,1 +1,2 @@
-[Errno 2] No such file or directory
+Correct
+readdir files don't match expectation

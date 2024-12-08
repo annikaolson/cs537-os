@@ -550,7 +550,116 @@ static int wfs_getattr(const char* path, struct stat* stbuf) {
  */
 static int wfs_mknod(const char *path, mode_t mode, dev_t dev) {
     printf("wfs_mknod called with path: %s\n", path);
-    return 0;
+        printf("wfs_mkdir called with path: %s\n", path);
+
+    if (!path || strlen(path) == 0) {
+        return -EINVAL;  // Invalid path
+    }
+
+    // Make a temporary copy of the path
+    char path_copy[strlen(path) + 1];
+    strcpy(path_copy, path);
+
+    // Extract the parent path and directory name
+    char *parent_path = dirname(path_copy);
+    char path_copy2[strlen(path) + 1];
+    strcpy(path_copy2, path);
+    char *file_name = basename(path_copy2);
+
+    // Validate parent path and directory name
+    if (!parent_path || !file_name || strlen(file_name) == 0) {
+        return -EINVAL;  // Invalid components
+    }
+
+    int parent_inode_num = resolve_path(parent_path);
+    if (parent_inode_num < 0) {
+        // parent directory doesn't exist
+        return -ENOENT;
+    }
+
+    struct wfs_inode parent_inode;
+    if (read_inode(parent_inode_num, &parent_inode) < 0) {
+        // error reading inode
+        return -EINVAL;
+    }
+
+    if (!S_ISDIR(parent_inode.mode)) {
+        // parent is not a directory
+        return -ENOTDIR;
+    }
+
+    for (int i = 0; i < N_BLOCKS - 1; i++) {
+        int index = parent_inode.blocks[i];
+        int byte_index = index / 8; // Byte index in the bitmap
+        int bit_index = index % 8;  // Bit position within the byte
+
+        // calculate the size of the data block bitmap in bytes
+        int bitmap_size = (superblock.num_data_blocks + 7) / 8;
+
+        // buffer for the data block bitmap
+        char bitmap[bitmap_size];
+
+        // read the data block bitmap
+        read_metadata(superblock.d_bitmap_ptr, bitmap, bitmap_size);
+
+        // check if bitmap is allocated for that spot
+        // or if data block is "zero" but not root node
+        if (!(bitmap[byte_index] & (1 << bit_index))
+            || (index == 0 && parent_inode_num != 0)) {
+            parent_inode.blocks[i] = allocate_data_block();
+            if (parent_inode.blocks[i] < 0) {
+                // return error if no blocks available
+                return -ENOSPC;
+            }
+        }
+
+        // data block is now allocated, write to data block
+        struct wfs_dentry dentries[DENTRIES_PER_BLOCK];
+        for (int j = 0; j < DENTRIES_PER_BLOCK; j++) {
+            if (strcmp(dentries[j].name, file_name) == 0) {
+                // directory already exists
+                return -EEXIST;
+            }
+            else if (dentries[j].num == 0) {
+                // make the new directory
+                strncpy(dentries[j].name, file_name, MAX_NAME);
+
+                // make the new inode
+                dentries[j].num = allocate_inode();
+
+                if (dentries[j].num < 0) {
+                    // invalid inode
+                    return -EINVAL;
+                }
+
+                // write dentry to disk
+                write_data_block(parent_inode.blocks[i], dentries);
+
+                // initialize the new inode
+                struct wfs_inode new_inode = {0};
+                new_inode.num = dentries[j].num;
+                new_inode.mode = mode;
+                new_inode.uid = getuid();  // initial value nonzero
+                new_inode.gid = getgid();  // initial value nonzero
+                new_inode.size = 0; // initial size 0
+                time(&new_inode.atim);
+                new_inode.mtim = new_inode.atim;
+                new_inode.ctim = new_inode.atim;
+                new_inode.nlinks = 2;  // At least 2 links for a new directory (one for "." and one for "..")
+
+                // write the new inode to disk
+                write_inode(new_inode.num, new_inode);
+
+                // update the parent
+                parent_inode.nlinks++;
+                parent_inode.mtim = time(NULL);
+
+                return write_inode(parent_inode_num, parent_inode);
+            }
+        }
+    }
+
+    return -ENOSPC; // No space in parent directory
 }
 
 /*
