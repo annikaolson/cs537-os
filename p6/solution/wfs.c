@@ -147,26 +147,32 @@ void read_disk(off_t offset, void* buffer, size_t size){
 
     // Raid 0: read from disk in round robin fashion
     if (raid_mode == 0) {
-        size_t bytes_remaining = size;
-        size_t buffer_offset = 0;
-
+        size_t bytes_remaining = size;  // Total data to read
+        size_t buffer_offset = 0;       // Offset in the buffer
+        int disk_index = 0;             // Disk to read from, starts at 0
+        
+        // Loop through the data, reading up to BLOCK_SIZE at a time in round-robin fashion
         while (bytes_remaining > 0) {
-            int disk_index = (offset / BLOCK_SIZE) % superblock.num_disks;
-            off_t disk_offset = (offset / (BLOCK_SIZE * superblock.num_disks)) * BLOCK_SIZE + (offset % BLOCK_SIZE);
+            // Calculate the chunk size to read (up to BLOCK_SIZE)
+            size_t chunk_size = (bytes_remaining < BLOCK_SIZE) ? bytes_remaining : BLOCK_SIZE;
 
-            size_t chunk_size = BLOCK_SIZE - (offset % BLOCK_SIZE);
-            if (chunk_size > bytes_remaining) {
-                chunk_size = bytes_remaining;
-            }
+            // Open the current disk
+            fd = open(disks[disk_index], O_RDONLY);
 
-            fd = open(disks[disk_index], O_RDWR);
+            // Seek to the correct position on the disk
+            off_t disk_offset = offset + (disk_index * BLOCK_SIZE);  // Disk-specific offset
             lseek(fd, disk_offset, SEEK_SET);
-            read(fd, (char*)buffer + buffer_offset, chunk_size);
+
+            // Read the data from the disk into the buffer
+            read(fd, (char *)buffer + buffer_offset, chunk_size);
             close(fd);
 
+            // Update the remaining bytes to read and the buffer offset
             bytes_remaining -= chunk_size;
             buffer_offset += chunk_size;
-            offset += chunk_size;
+
+            // Move to the next disk in round-robin fashion
+            disk_index = (disk_index + 1) % superblock.num_disks;  // Cycle through disks
         }
     }
     // Raid 1: all data mirrored
@@ -235,45 +241,32 @@ void write_disk(off_t offset, const void* buffer, size_t size) {
 
     // Raid 0: write to disks in round robin fashion
     if (raid_mode == 0) {
-        size_t bytes_remaining = size;
-        size_t buffer_offset = 0;
-
-        // Calculate the starting stripe index and offset within the stripe
-        size_t stripe_index = offset / BLOCK_SIZE;
-        size_t block_offset = offset % BLOCK_SIZE;
-
+        size_t bytes_remaining = size;  // Total data to write
+        size_t buffer_offset = 0;       // Offset in the buffer
+        int disk_index = 0;             // Disk to write to, starts at 0
+        
+        // Loop through the data, writing up to BLOCK_SIZE at a time in round-robin fashion
         while (bytes_remaining > 0) {
-            // Determine the current disk and disk offset
-            int disk_index = stripe_index % superblock.num_disks;
-            off_t disk_offset = (stripe_index / superblock.num_disks) * BLOCK_SIZE;
+            // Calculate the chunk size to write (up to BLOCK_SIZE)
+            size_t chunk_size = (bytes_remaining < BLOCK_SIZE) ? bytes_remaining : BLOCK_SIZE;
 
-            // Calculate the amount of data to write for this stripe
-            size_t chunk_size = BLOCK_SIZE - block_offset;
-            if (chunk_size > bytes_remaining) {
-                chunk_size = bytes_remaining;
-            }
-
-            // Open the disk file
+            // Open the current disk
             fd = open(disks[disk_index], O_RDWR);
 
             // Seek to the correct position on the disk
-            lseek(fd, disk_offset + block_offset, SEEK_SET);
+            off_t disk_offset = offset + (disk_index * BLOCK_SIZE);  // Disk-specific offset
+            lseek(fd, disk_offset, SEEK_SET);
 
             // Write the data to the disk
             write(fd, (char *)buffer + buffer_offset, chunk_size);
             close(fd);
 
-            // Update counters and offsets
+            // Update the remaining bytes to write and the buffer offset
             bytes_remaining -= chunk_size;
             buffer_offset += chunk_size;
 
-            // Advance to the next stripe
-            if (block_offset + chunk_size == BLOCK_SIZE) {
-                stripe_index++;
-                block_offset = 0;
-            } else {
-                block_offset += chunk_size;
-            }
+            // Move to the next disk in round-robin fashion
+            disk_index = (disk_index + 1) % superblock.num_disks;  // Cycle through disks
         }
     }
     // Raid 1 or 1v: all data is mirrored
@@ -451,7 +444,7 @@ int resolve_path(const char *path) {
         int found_inode = -1;
 
         // NOTE: last block[N_BLOCKS] reserved for indirect, rest are wsf_dentry
-        for (int i = 0; i < N_BLOCKS - 1; i++) {
+        for (int i = 0; i < D_BLOCK; i++) {
             struct wfs_dentry entry[DENTRIES_PER_BLOCK]; // size is BLOCK_SIZE
             // read in the directory entry
             if (read_data_block(dir_inode.blocks[i], entry) < 0){
@@ -588,7 +581,7 @@ static int wfs_mknod(const char *path, mode_t mode, dev_t dev) {
         return -ENOTDIR;
     }
 
-    for (int i = 0; i < N_BLOCKS - 1; i++) {
+    for (int i = 0; i < D_BLOCK; i++) {
         int index = parent_inode.blocks[i];
         int byte_index = index / 8; // Byte index in the bitmap
         int bit_index = index % 8;  // Bit position within the byte
@@ -602,10 +595,10 @@ static int wfs_mknod(const char *path, mode_t mode, dev_t dev) {
         // read the data block bitmap
         read_metadata(superblock.d_bitmap_ptr, bitmap, bitmap_size);
 
-        // check if bitmap is allocated for that spot
-        // or if data block is "zero" but not root node
-        if (!(bitmap[byte_index] & (1 << bit_index))
-            || (index == 0 && parent_inode_num != 0)) {
+        // check if bitmap is allocated for that spot 
+        // or if data block is "zero" but either not root node or i != 0
+        if ((!(bitmap[byte_index] & (1 << bit_index)))
+            || (index == 0 && (parent_inode.num != 0 || i != 0))) {
             parent_inode.blocks[i] = allocate_data_block();
             if (parent_inode.blocks[i] < 0) {
                 // return error if no blocks available
@@ -613,8 +606,13 @@ static int wfs_mknod(const char *path, mode_t mode, dev_t dev) {
             }
         }
 
-        // data block is now allocated, write to data block
+        // data block is now allocated, read data block
         struct wfs_dentry dentries[DENTRIES_PER_BLOCK];
+        if (read_data_block(parent_inode.blocks[i], dentries) < 0) {
+            return -EINVAL;
+        }
+
+        // try to write to data block
         for (int j = 0; j < DENTRIES_PER_BLOCK; j++) {
             if (strcmp(dentries[j].name, file_name) == 0) {
                 // directory already exists
@@ -708,7 +706,7 @@ static int wfs_mkdir(const char *path, mode_t mode) {
     }
 
     struct wfs_dentry dentries[DENTRIES_PER_BLOCK];
-    for (int i = 0; i < N_BLOCKS - 1; i++) {
+    for (int i = 0; i < D_BLOCK; i++) {
         int index = parent_inode.blocks[i];
         int byte_index = index / 8; // Byte index in the bitmap
         int bit_index = index % 8;  // Bit position within the byte
@@ -725,7 +723,7 @@ static int wfs_mkdir(const char *path, mode_t mode) {
         // check if bitmap is allocated for that spot
         // or if data block is "zero" but not root node
         if (!(bitmap[byte_index] & (1 << bit_index))
-            || (index == 0 && parent_inode_num != 0)) {
+            || (index == 0 && (parent_inode.num != 0 || i != 0))) {
             parent_inode.blocks[i] = allocate_data_block();
             if (parent_inode.blocks[i] < 0) {
                 // return error if no blocks available
