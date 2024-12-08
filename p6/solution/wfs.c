@@ -343,6 +343,17 @@ int write_inode(int inode_num, struct wfs_inode inode) {
 }
 
 /*
+ * Helper function to free inode
+ */
+void free_inode(int inode_num) {
+    // Reset the inode to zero
+    struct wfs_inode empty_inode = {0};
+
+    // Write the cleared inode back to the inode table
+    write_inode(inode_num, empty_inode);
+}
+
+/*
  * Allocate and initializes a new data block
  *
  * Returns data block number or -ENOSPC
@@ -410,6 +421,26 @@ int write_data_block(int block_num, const void *buffer) {
 
     return 0; // Success
 }
+
+/*
+ * Helper function to free data block
+ */
+void free_data_block(int block_num) {
+    // Get the block's bitmap index and bit position
+    int bitmap_index = block_num / 8;
+    int bit_position = block_num % 8;
+
+    // Read the data block bitmap (from all disks if necessary)
+    char bitmap[superblock.num_data_blocks / 8 + 1];  // Make sure the bitmap size is enough
+    read_metadata(superblock.d_bitmap_ptr, bitmap, sizeof(bitmap));
+
+    // Clear the corresponding bit in the bitmap
+    bitmap[bitmap_index] &= ~(1 << bit_position);
+
+    // Write the updated bitmap back to disk
+    write_metadata(superblock.d_bitmap_ptr, bitmap, sizeof(bitmap));
+}
+
 
 /*
  * Resolve path into an inode
@@ -482,6 +513,109 @@ int resolve_path(const char *path) {
     return current_inode_num;
 }
 
+/*
+ * Split the path
+ */
+void split_path(const char* path, char* parent_path, char* file_name) {
+    char temp_path[MAX_PATH];
+    strncpy(temp_path, path, MAX_PATH);
+
+    // Find the last '/' in the path
+    char* last_slash = strrchr(temp_path, '/');
+    if (last_slash != NULL) {
+        *last_slash = '\0';  // Null-terminate the parent path
+        strncpy(file_name, last_slash + 1, MAX_NAME);  // Get the file name
+    } else {
+        parent_path[0] = '.';  // No slash, the parent is the current directory
+        parent_path[1] = '\0';
+        strncpy(file_name, path, MAX_NAME);
+    }
+
+    strncpy(parent_path, temp_path, MAX_PATH);
+}
+
+/*
+ * Find the block for the path
+ */
+int find_block_for_path(struct wfs_inode* parent_inode, const char* file_name) {
+    for (int i = 0; i < N_BLOCKS && parent_inode->blocks[i] != 0; i++) {
+        struct wfs_dentry dentries[DENTRIES_PER_BLOCK];
+        if (read_data_block(parent_inode->blocks[i], dentries) < 0) {
+            return -EINVAL;  // Failed to read data block
+        }
+
+        for (int j = 0; j < DENTRIES_PER_BLOCK; j++) {
+            if (strcmp(dentries[j].name, file_name) == 0) {
+                return i;  // Found the block containing the directory entry
+            }
+        }
+    }
+
+    return -ENOENT;  // Directory entry not found
+}
+
+/* 
+ * Remove a dentry
+ */
+int remove_directory_entry(const char* path) {
+    // Step 1: Resolve the parent path and the filename
+    char parent_path[MAX_PATH];
+    char file_name[MAX_NAME];
+    split_path(path, parent_path, file_name);
+
+    // Step 2: Find the inode for the parent directory
+    int parent_inode_num = resolve_path(parent_path);
+    if (parent_inode_num < 0) {
+        return -ENOENT;  // Parent directory not found
+    }
+
+    // Step 3: Read the parent inode
+    struct wfs_inode parent_inode;
+    if (read_inode(parent_inode_num, &parent_inode) < 0) {
+        return -EINVAL;  // Invalid parent inode
+    }
+
+    // Step 4: Find the block where the entry is located
+    int block_index = find_block_for_path(&parent_inode, file_name);
+    if (block_index < 0) {
+        return -ENOENT;  // File/directory not found
+    }
+
+    // Step 5: Read the data block containing the entry
+    struct wfs_dentry dentries[DENTRIES_PER_BLOCK];
+    if (read_data_block(parent_inode.blocks[block_index], dentries) < 0) {
+        return -EINVAL;  // Failed to read data block
+    }
+
+    // Step 6: Find and remove the entry from the data block
+    int entry_found = 0;
+    for (int i = 0; i < DENTRIES_PER_BLOCK; i++) {
+        if (strcmp(dentries[i].name, file_name) == 0) {
+            // Mark entry as deleted (set inode number to 0)
+            dentries[i].num = 0;
+            entry_found = 1;
+            break;
+        }
+    }
+
+    if (!entry_found) {
+        return -ENOENT;  // Directory entry not found
+    }
+
+    // Step 7: Write the updated data block back to disk
+    if (write_data_block(parent_inode.blocks[block_index], dentries) < 0) {
+        return -EINVAL;  // Failed to write data block
+    }
+
+    // Step 8: Decrease the nlinks of the parent inode
+    parent_inode.nlinks--;
+    if (write_inode(parent_inode_num, parent_inode) < 0) {
+        return -EINVAL;  // Failed to write updated parent inode
+    }
+
+    return 0;  // Successfully removed directory entry
+}
+
 ////////////////////////
 // CALLBACK FUNCTIONS //
 ////////////////////////
@@ -519,7 +653,7 @@ static int wfs_getattr(const char* path, struct stat* stbuf) {
     struct wfs_inode inode;
     if (read_inode(inode_num, &inode) < 0) {
         // invalid inode number
-        return -EINVAL;
+        return -ENOSPC;
     }
 
     // fill in stat struct based on the inode
@@ -627,7 +761,7 @@ static int wfs_mknod(const char *path, mode_t mode, dev_t dev) {
 
                 if (dentries[j].num < 0) {
                     // invalid inode
-                    return -EINVAL;
+                    return -ENOSPC;
                 }
 
                 // write dentry to disk
@@ -750,7 +884,7 @@ static int wfs_mkdir(const char *path, mode_t mode) {
 
                 if (dentries[j].num < 0) {
                     // invalid inode
-                    return -EINVAL;
+                    return -ENOSPC;
                 }
 
                 // write dentry to disk
@@ -792,7 +926,55 @@ static int wfs_mkdir(const char *path, mode_t mode) {
  */
 static int wfs_unlink(const char *path) {
     printf("wfs_unlink called with path: %s\n", path);
-    return 0;
+
+    // Step 1: Resolve the path to get the inode number of the file
+    int inode_num = resolve_path(path);
+    if (inode_num < 0) {
+        return -ENOENT;  // File not found
+    }
+
+    // Step 2: Read the inode of the file
+    struct wfs_inode inode;
+    if (read_inode(inode_num, &inode) < 0) {
+        return -EINVAL;  // Invalid inode
+    }
+
+    // Step 3: Check if it's a regular file (not a directory)
+    if (!S_ISREG(inode.mode)) {
+        return -EISDIR;  // It's a directory, not a file
+    }
+
+    // Step 4: Free the data blocks associated with the file
+    for (int i = 0; i < N_BLOCKS; i++) {
+        if (inode.blocks[i] == 0) {
+            continue;  // No block allocated
+        }
+
+        // Mark the block as free in the bitmap
+        free_data_block(inode.blocks[i]);
+
+        // Reset the block to 0 in the inode
+        inode.blocks[i] = 0;
+    }
+
+    // Step 5: Decrement the link count (nlinks) of the inode
+    inode.nlinks--;
+    if (inode.nlinks == 0) {
+        // If the link count is 0, we can safely remove the inode
+        free_inode(inode_num);
+    } else {
+        // Otherwise, just update the inode
+        write_inode(inode_num, inode);
+    }
+
+    // Step 6: Remove the directory entry if this file is in a directory
+    // This step depends on the directory structure and may involve finding the parent directory
+    // and removing the entry from its list of files (usually done in the parent directory's data block)
+    if (remove_directory_entry(path) < 0) {
+        return -ENOSPC;  // Failed to remove directory entry
+    }
+
+    return 0;  // Success
 }
 
 /*
@@ -803,7 +985,79 @@ static int wfs_unlink(const char *path) {
  */
 static int wfs_rmdir(const char *path) {
     printf("wfs_rmdir called with path: %s\n", path);
-    return 0;
+
+    // Step 1: Resolve the path and get the parent directory
+    int parent_inode_num = resolve_path(path);
+    if (parent_inode_num < 0) {
+        printf("Parent directory not found: %s\n", path);
+        return -ENOENT;  // Parent directory not found
+    }
+
+    // Step 2: Read the parent directory inode
+    struct wfs_inode parent_inode;
+    if (read_inode(parent_inode_num, &parent_inode) < 0) {
+        return -EINVAL;  // Invalid parent inode
+    }
+
+    // Step 3: Find the directory entry in the parent directory
+    struct wfs_dentry dentries[DENTRIES_PER_BLOCK];
+    int dir_block_index = find_block_for_path(&parent_inode, path);
+    if (dir_block_index < 0) {
+        printf("Directory not found in parent directory: %s\n", path);
+        return -ENOENT;  // Directory not found
+    }
+
+    // Step 4: Read the data block containing directory entries
+    if (read_data_block(parent_inode.blocks[dir_block_index], dentries) < 0) {
+        return -EINVAL;  // Failed to read the data block
+    }
+
+    // Step 5: Locate the directory entry and verify it's empty
+    struct wfs_inode dir_inode;
+    int dir_entry_found = 0;
+    for (int i = 0; i < DENTRIES_PER_BLOCK; i++) {
+        if (strcmp(dentries[i].name, path) == 0) {
+            dir_entry_found = 1;
+            if (read_inode(dentries[i].num, &dir_inode) < 0) {
+                return -EINVAL;  // Failed to read the directory inode
+            }
+            break;
+        }
+    }
+    if (!dir_entry_found) {
+        return -ENOENT;  // Directory entry not found in parent
+    }
+
+    // Step 6: Check if the directory is empty
+    printf("Directory inode nlinks: %d\n", dir_inode.nlinks);
+    if (dir_inode.nlinks > 2) {
+        return -ENOTEMPTY;  // Directory is not empty
+    }
+
+    // Step 7: Remove the directory entry from the parent directory
+    for (int i = 0; i < DENTRIES_PER_BLOCK; i++) {
+        if (strcmp(dentries[i].name, path) == 0) {
+            dentries[i].num = 0;  // Mark the directory entry as removed
+            write_data_block(parent_inode.blocks[dir_block_index], dentries);
+            break;
+        }
+    }
+
+    // Step 8: Free the directory's data blocks and inode
+    for (int i = 0; i < N_BLOCKS; i++) {
+        if (dir_inode.blocks[i] != 0) {
+            free_data_block(dir_inode.blocks[i]);
+        }
+    }
+
+    // Free the directory inode
+    free_inode(dentries[0].num);
+
+    // Step 9: Update the parent inode (decrease the link count)
+    parent_inode.nlinks--;
+    write_inode(parent_inode_num, parent_inode);
+
+    return 0;  // Success
 }
 
 /*
@@ -812,10 +1066,68 @@ static int wfs_rmdir(const char *path) {
  * See read(2) for full details. 
  * Returns the number of bytes transferred, or 0 if offset was at or beyond the end of the file. 
  * Required for any sensible filesystem.
+ *
+ * path: path of file that is being written to
+ * buf: data to be written to the file
+ * size: number of bytes to be written to file starting from the offset
+ * offset: offset within the file where the write operation should start
  */
 static int wfs_read(const char* path, char *buf, size_t size, off_t offset, struct fuse_file_info* fi) {
     printf("wfs_read called with path: %s\n", path);
-    return 0;
+
+    // Step 1: Resolve the path to get the inode number
+    int inode_num = resolve_path(path);
+    if (inode_num < 0) {
+        return -ENOENT;  // File does not exist
+    }
+
+    // Step 2: Read the inode
+    struct wfs_inode inode;
+    if (read_inode(inode_num, &inode) < 0) {
+        return -EINVAL;  // Invalid inode number
+    }
+
+    // Step 3: Check if it's a regular file
+    if (!S_ISREG(inode.mode)) {
+        return -EINVAL;  // Not a regular file
+    }
+
+    // Step 4: Check if the offset is beyond the file size
+    if (offset >= inode.size) {
+        return 0;  // End of file reached, nothing to read
+    }
+
+    // Step 5: Start reading data from the file
+    size_t bytes_read = 0;
+    while (bytes_read < size && offset + bytes_read < inode.size) {
+        // Find the block index based on the offset
+        int block_index = (offset + bytes_read) / BLOCK_SIZE;
+        int block_offset = (offset + bytes_read) % BLOCK_SIZE;
+
+        // Check if the data block exists
+        if (inode.blocks[block_index] == 0) {
+            return -EIO;  // Error: No data block allocated (unexpected)
+        }
+
+        // Read the data block into a temporary buffer
+        char data_block[BLOCK_SIZE];
+        if (read_data_block(inode.blocks[block_index], data_block) < 0) {
+            return -EIO;  // Failed to read data block
+        }
+
+        // Calculate how many bytes to copy from the current block
+        size_t bytes_to_copy = size - bytes_read;
+        size_t block_remaining = BLOCK_SIZE - block_offset;
+        size_t copy_size = (bytes_to_copy < block_remaining) ? bytes_to_copy : block_remaining;
+
+        // Copy the data into the buffer
+        memcpy(buf + bytes_read, data_block + block_offset, copy_size);
+
+        // Update the number of bytes read and move the offset
+        bytes_read += copy_size;
+    }
+
+    return bytes_read;  // Return the number of bytes read
 }
 
 /*
@@ -823,7 +1135,93 @@ static int wfs_read(const char* path, char *buf, size_t size, off_t offset, stru
  */
 static int wfs_write(const char* path, const char *buf, size_t size, off_t offset, struct fuse_file_info* fi) {
     printf("wfs_write called with path: %s\n", path);
-    return 0;
+
+    // Step 1: Resolve path and get inode number
+    int inode_num = resolve_path(path);
+    if (inode_num < 0) {
+        return -ENOENT;  // File does not exist
+    }
+
+    // Step 2: Read the inode for the file
+    struct wfs_inode inode;
+    if (read_inode(inode_num, &inode) < 0) {
+        return -EINVAL;  // Invalid inode
+    }
+
+    // Step 3: Validate the inode type (regular file)
+    if (!S_ISREG(inode.mode)) {
+        return -EINVAL;  // Invalid inode type
+    }
+
+    // Step 4: Update file size if necessary
+    if (offset + size > inode.size) {
+        inode.size = offset + size;
+        write_inode(inode_num, inode);  // Save the updated inode
+    }
+
+    // Step 5: Read the bitmap for data block allocation
+    int bitmap_size = (superblock.num_data_blocks + 7) / 8;
+    char bitmap[bitmap_size];
+    read_metadata(superblock.d_bitmap_ptr, bitmap, bitmap_size);
+
+    // Step 6: Write to data block(s)
+    size_t bytes_written = 0;
+    while (bytes_written < size) {
+        // Calculate the block index and block offset
+        int block_index = (offset + bytes_written) / BLOCK_SIZE;
+        int block_offset = (offset + bytes_written) % BLOCK_SIZE;
+
+        // Step 7: Check if the block has been allocated (bitmap check)
+        if (block_index == 0) {
+            // Special case for the first data block (block 0)
+            if (!(bitmap[0] & (1 << 0))) {  // Check if the first bit (block 0) is not allocated
+                // Block 0 is unallocated, so we need to allocate it
+                inode.blocks[block_index] = allocate_data_block();
+                if (inode.blocks[block_index] < 0) {
+                    return -ENOSPC;  // No space left to allocate a block
+                }
+                // Mark the block as allocated in the bitmap
+                bitmap[0] |= (1 << 0);  // Set the bit for block 0
+                write_metadata(superblock.d_bitmap_ptr, bitmap, bitmap_size);  // Write the updated bitmap
+            }
+        } else {
+            // For other blocks, check the bitmap and allocate if necessary
+            if (!(bitmap[block_index / 8] & (1 << (block_index % 8)))) {
+                // Block is not allocated, so we need to allocate it
+                inode.blocks[block_index] = allocate_data_block();
+                if (inode.blocks[block_index] < 0) {
+                    return -ENOSPC;  // No space left to allocate a block
+                }
+                // Mark the block as allocated in the bitmap
+                bitmap[block_index / 8] |= (1 << (block_index % 8));  // Set the bit for this block
+                write_metadata(superblock.d_bitmap_ptr, bitmap, bitmap_size);  // Write the updated bitmap
+            }
+        }
+
+        // Step 8: Read the data block into a buffer
+        char data_block[BLOCK_SIZE] = {0};
+        if (read_data_block(inode.blocks[block_index], data_block) < 0) {
+            return -EINVAL;  // Invalid data block
+        }
+
+        // Step 9: Write data to the buffer
+        size_t chunk_size = (size - bytes_written) < (BLOCK_SIZE - block_offset) ? (size - bytes_written) : (BLOCK_SIZE - block_offset);
+        memcpy(data_block + block_offset, buf + bytes_written, chunk_size);
+
+        // Step 10: Write the modified data block back to disk
+        if (write_data_block(inode.blocks[block_index], data_block) < 0) {
+            return -EINVAL;  // Failed to write data block
+        }
+
+        // Step 11: Update the number of bytes written
+        bytes_written += chunk_size;
+    }
+
+    // Step 12: Update the inode's modification time and write it back
+    inode.mtim = time(NULL);
+    write_inode(inode_num, inode);
+
+    return size;  // Return the number of bytes written
 }
 
 /*
@@ -835,7 +1233,50 @@ static int wfs_write(const char* path, const char *buf, size_t size, off_t offse
  */
 static int wfs_readdir(const char* path, void* buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info* fi) {
     printf("wfs_readdir called with path: %s\n", path);
-    return 0;
+
+    // Step 1: Resolve the path to get the inode number
+    int inode_num = resolve_path(path);
+    if (inode_num < 0) {
+        return -ENOENT;  // Directory not found
+    }
+
+    // Step 2: Read the inode of the directory
+    struct wfs_inode inode;
+    if (read_inode(inode_num, &inode) < 0) {
+        return -EINVAL;  // Invalid inode
+    }
+
+    // Step 3: Check if the inode is a directory (S_ISDIR checks if it's a directory)
+    if (!S_ISDIR(inode.mode)) {
+        return -ENOTDIR;  // Not a directory
+    }
+
+    // Step 4: Read the directory's data blocks and pass each entry to the filler
+    struct wfs_dentry dentries[DENTRIES_PER_BLOCK];  // Buffer for directory entries
+    for (int i = 0; i < N_BLOCKS; i++) {
+        if (inode.blocks[i] == 0) {
+            continue;  // No block allocated for this entry
+        }
+
+        // Read the data block into dentries
+        if (read_data_block(inode.blocks[i], dentries) < 0) {
+            return -EINVAL;  // Failed to read the block
+        }
+
+        // Add each directory entry to the filler
+        for (int j = 0; j < DENTRIES_PER_BLOCK; j++) {
+            if (dentries[j].num == 0) {
+                continue;  // Empty entry, skip
+            }
+
+            // Use the filler to return the directory entry
+            if (filler(buf, dentries[j].name, NULL, 0)) {
+                return -ENOMEM;  // If the filler fails
+            }
+        }
+    }
+
+    return 0;  // Success
 }
 
 /*

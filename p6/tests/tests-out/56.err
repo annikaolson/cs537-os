@@ -1,5 +1,6 @@
 Traceback (most recent call last):
-  File "/home/myranda/private/cs537/p4/cs537-os/p6/tests/./read-write.py", line 24, in <module>
-    fh.write(towrite)
-OSError: [Errno 5] Input/output error
+  File "/home/myranda/private/cs537/p4/cs537-os/p6/tests/./read-write.py", line 27, in <module>
+    fh.close()
+FileNotFoundError: [Errno 2] No such file or directory
+cat: mnt/file1: No such file or directory
 diff: mnt/file1: No such file or directory
