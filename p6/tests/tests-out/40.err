@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+  File "/home/myranda/private/cs537/p4/cs537-os/p6/tests/./readdir-check.py", line 8, in <module>
+    foundfiles = os.listdir("mnt")
+OSError: [Errno 22] Invalid argument: 'mnt'

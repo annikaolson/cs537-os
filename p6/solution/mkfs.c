@@ -102,7 +102,7 @@ int create_fs(int raid_mode, int num_inodes, int num_data_blocks, char **disks, 
         write(fd, &root_inode, sizeof(struct wfs_inode));
 
         // write other inodes
-        for (int i = 1; i < num_inodes; i++) {
+        for (int i = 1; i < num_inodes - 1; i++) {
             struct wfs_inode inode;
             // Align to the next block boundary
             lseek(fd, superblock.i_blocks_ptr + i * BLOCK_SIZE, SEEK_SET);

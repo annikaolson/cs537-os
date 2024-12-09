@@ -332,12 +332,12 @@ int read_inode(int inode_num, struct wfs_inode *inode) {
 /*
  * Writes a new inode to disk
  */
-int write_inode(int inode_num, struct wfs_inode inode) {
+int write_inode(int inode_num, struct wfs_inode *inode) {
     if (inode_num < 0 || inode_num >= superblock.num_inodes) {
         return -EINVAL; // Invalid inode number
     }
 
-    write_metadata(superblock.i_blocks_ptr + (inode_num * BLOCK_SIZE), &inode, sizeof(struct wfs_inode));
+    write_metadata(superblock.i_blocks_ptr + (inode_num * BLOCK_SIZE), inode, sizeof(struct wfs_inode));
 
     return 0; // Success
 }
@@ -350,7 +350,7 @@ void free_inode(int inode_num) {
     struct wfs_inode empty_inode = {0};
 
     // Write the cleared inode back to the inode table
-    write_inode(inode_num, empty_inode);
+    write_inode(inode_num, &empty_inode);
 }
 
 /*
@@ -359,41 +359,44 @@ void free_inode(int inode_num) {
  * Returns data block number or -ENOSPC
  */
 int allocate_data_block() {
-    // calculate the size of the data block bitmap in bytes
+    // Calculate the size of the data block bitmap in bytes
     int bitmap_size = (superblock.num_data_blocks + 7) / 8;
 
-    // buffer for the data block bitmap
+    // Buffer for the data block bitmap
     char bitmap[bitmap_size];
 
-    // read the data block bitmap
-    read_metadata(superblock.d_bitmap_ptr, bitmap, bitmap_size);
+    // Read the data block bitmap
+    read_disk(superblock.d_bitmap_ptr, bitmap, bitmap_size);
 
-    // iterate over bitmap to find first free block
-    for (int byte_index = 0; byte_index < bitmap_size; ++byte_index) {
-        for (int bit_index = 0; bit_index < 8; ++bit_index) {
-            if (!(bitmap[byte_index] & (1 << bit_index))) {
-                // Mark the bit as allocated
-                bitmap[byte_index] |= (1 << bit_index);
+    // Search for a free bit in the bitmap
+    for (int i = 0; i < superblock.num_data_blocks; i++) {
+        int byte_index = i / 8;  // Byte index in the bitmap
+        int bit_index = i % 8;   // Bit position within the byte
 
-                // Write the updated bitmap back to disk
-                write_disk(superblock.d_bitmap_ptr, bitmap, bitmap_size);
+        if (!(bitmap[byte_index] & (1 << bit_index))) {
+            // Mark the bit as allocated
+            bitmap[byte_index] |= (1 << bit_index);
 
-                // Calculate the block number
-                int block_number = byte_index * 8 + bit_index;
+            // Write the updated bitmap back to disk
+            write_disk(superblock.d_bitmap_ptr, bitmap, bitmap_size);
 
-                // initialize the new data block to zero
-                char zero_block[BLOCK_SIZE] = {0};
+            // Calculate the block number
+            int block_number = i;
 
-                // Write the initialized data block to disk
-                write_disk(superblock.d_blocks_ptr + (block_number * BLOCK_SIZE), zero_block, BLOCK_SIZE);
+            // Initialize the new data block to zero (optional, depending on whether it's needed)
+            char zero_block[BLOCK_SIZE];
+            memset(zero_block, 0, BLOCK_SIZE);
 
-                // Return the allocated block number
-                return block_number;
-            }
+            // Write the initialized data block to disk
+            write_disk(superblock.d_blocks_ptr + (block_number * BLOCK_SIZE), zero_block, BLOCK_SIZE);
+
+            // Return the allocated block number
+            return block_number;
         }
     }
 
-    return -ENOSPC; // No free data blocks available
+    // No free data blocks available
+    return -ENOSPC;
 }
 
 /*
@@ -441,7 +444,6 @@ void free_data_block(int block_num) {
     write_metadata(superblock.d_bitmap_ptr, bitmap, sizeof(bitmap));
 }
 
-
 /*
  * Resolve path into an inode
  * 
@@ -450,66 +452,71 @@ void free_data_block(int block_num) {
 int resolve_path(const char *path) {
     char path_copy[MAX_PATH];
 
-    // copy path to avoid modifying the original
+    // Copy path to avoid modifying the original
     strncpy(path_copy, path, MAX_PATH);
 
-    // start at root directory (inode 0)
-    // root directory handling is built in
+    // Start at root directory (inode 0)
     int current_inode_num = 0;
     char *component = strtok(path_copy, "/");
 
     while (component != NULL) {
-        struct wfs_inode dir_inode; // directory inode
+        struct wfs_inode dir_inode; // Directory inode
 
-        // read the current inode
-        if (read_inode(current_inode_num, &dir_inode) < 0){
+        // Read the current inode
+        if (read_inode(current_inode_num, &dir_inode) < 0) {
             return -EINVAL;
         }
 
-        // check that the current inode is a directory
-        if (!S_ISDIR(dir_inode.mode)){
-            return -EINVAL;
+        // Check that the current inode is a directory
+        if (!S_ISDIR(dir_inode.mode)) {
+            // If it's a file and we're at the last component, return inode
+            if (strtok(NULL, "/") == NULL) {
+                return current_inode_num; // End of path, returning the file inode
+            } else {
+                return -EINVAL; // If it’s a file but not the last component, return error
+            }
         }
 
-        // look up the component (file or directory) in the current directory's blocks
+        // Look up the component (file or directory) in the current directory's blocks
         int found_inode = -1;
 
-        // NOTE: last block[N_BLOCKS] reserved for indirect, rest are wsf_dentry
+        // NOTE: Last block[N_BLOCKS] reserved for indirect, rest are wfs_dentry
         for (int i = 0; i < D_BLOCK; i++) {
-            struct wfs_dentry entry[DENTRIES_PER_BLOCK]; // size is BLOCK_SIZE
-            // read in the directory entry
-            if (read_data_block(dir_inode.blocks[i], entry) < 0){
+            struct wfs_dentry entry[DENTRIES_PER_BLOCK]; // Size is BLOCK_SIZE
+            // Read in the directory entry
+            if (read_data_block(dir_inode.blocks[i], entry) < 0) {
                 return -EINVAL;
             }
 
-            // check directory entry
-            for (int j = 0; j < DENTRIES_PER_BLOCK; j ++){
+            // Check directory entry
+            for (int j = 0; j < DENTRIES_PER_BLOCK; j++) {
                 if (strcmp(entry[j].name, component) == 0) {
-                    // found the component, save inode number
+                    // Found the component, save inode number
                     found_inode = entry[j].num;
                     break;
                 }
             }
 
-            // directory entry found, break out of loop
-            if (found_inode != -1){
+            // Directory entry found, break out of loop
+            if (found_inode != -1) {
                 break;
             }
         }
 
-        // check if component was found
+        // Check if component was found
         if (found_inode == -1) {
             printf("Component not found: %s\n", component);
-            return -1;
+            return -ENOENT;
         }
 
         current_inode_num = found_inode;
 
-        // continue to the next component
+        // Continue to the next component
         component = strtok(NULL, "/");
     }
 
-    // return the inode number of the final component
+    // If the loop ends and we haven’t encountered a file at the last component,
+    // it must be a directory, so return its inode
     return current_inode_num;
 }
 
@@ -609,7 +616,7 @@ int remove_directory_entry(const char* path) {
 
     // Step 8: Decrease the nlinks of the parent inode
     parent_inode.nlinks--;
-    if (write_inode(parent_inode_num, parent_inode) < 0) {
+    if (write_inode(parent_inode_num, &parent_inode) < 0) {
         return -EINVAL;  // Failed to write updated parent inode
     }
 
@@ -677,7 +684,6 @@ static int wfs_getattr(const char* path, struct stat* stbuf) {
  */
 static int wfs_mknod(const char *path, mode_t mode, dev_t dev) {
     printf("wfs_mknod called with path: %s\n", path);
-        printf("wfs_mkdir called with path: %s\n", path);
 
     if (!path || strlen(path) == 0) {
         return -EINVAL;  // Invalid path
@@ -729,8 +735,7 @@ static int wfs_mknod(const char *path, mode_t mode, dev_t dev) {
         // read the data block bitmap
         read_metadata(superblock.d_bitmap_ptr, bitmap, bitmap_size);
 
-        // check if bitmap is allocated for that spot 
-        // or if data block is "zero" but either not root node or i != 0
+        // check if bitmap is allocated for that spot and if it's full
         if ((!(bitmap[byte_index] & (1 << bit_index)))
             || (index == 0 && (parent_inode.num != 0 || i != 0))) {
             parent_inode.blocks[i] = allocate_data_block();
@@ -742,7 +747,8 @@ static int wfs_mknod(const char *path, mode_t mode, dev_t dev) {
 
         // data block is now allocated, read data block
         struct wfs_dentry dentries[DENTRIES_PER_BLOCK];
-        if (read_data_block(parent_inode.blocks[i], dentries) < 0) {
+
+        if (read_data_block(parent_inode.blocks[i], &dentries) < 0) {
             return -EINVAL;
         }
 
@@ -752,7 +758,7 @@ static int wfs_mknod(const char *path, mode_t mode, dev_t dev) {
                 // directory already exists
                 return -EEXIST;
             }
-            else if (dentries[j].num == 0) {
+            else if (!dentries[j].name || !dentries[j].num) {
                 // make the new directory
                 strncpy(dentries[j].name, file_name, MAX_NAME);
 
@@ -770,7 +776,7 @@ static int wfs_mknod(const char *path, mode_t mode, dev_t dev) {
                 // initialize the new inode
                 struct wfs_inode new_inode = {0};
                 new_inode.num = dentries[j].num;
-                new_inode.mode = mode;
+                new_inode.mode = mode | S_IFREG | S_IRUSR | S_IWUSR;
                 new_inode.uid = getuid();  // initial value nonzero
                 new_inode.gid = getgid();  // initial value nonzero
                 new_inode.size = 0; // initial size 0
@@ -780,13 +786,13 @@ static int wfs_mknod(const char *path, mode_t mode, dev_t dev) {
                 new_inode.nlinks = 2;  // At least 2 links for a new directory (one for "." and one for "..")
 
                 // write the new inode to disk
-                write_inode(new_inode.num, new_inode);
+                write_inode(new_inode.num, &new_inode);
 
                 // update the parent
                 parent_inode.nlinks++;
                 parent_inode.mtim = time(NULL);
 
-                return write_inode(parent_inode_num, parent_inode);
+                return write_inode(parent_inode_num, &parent_inode);
             }
         }
     }
@@ -866,6 +872,8 @@ static int wfs_mkdir(const char *path, mode_t mode) {
         }
 
         // data block was or now is allocated
+        memset(dentries, 0, sizeof(dentries));
+
         if (read_data_block(parent_inode.blocks[i], dentries) < 0) {
             return -EINVAL;
         }
@@ -875,7 +883,7 @@ static int wfs_mkdir(const char *path, mode_t mode) {
                 // directory already exists
                 return -EEXIST;
             }
-            else if (dentries[j].num == 0) {
+            else if (!dentries[j].name || !dentries[j].num) {
                 // make the new directory
                 strncpy(dentries[j].name, dir_name, MAX_NAME);
 
@@ -903,13 +911,13 @@ static int wfs_mkdir(const char *path, mode_t mode) {
                 new_inode.nlinks = 2;  // At least 2 links for a new directory (one for "." and one for "..")
 
                 // write the new inode to disk
-                write_inode(new_inode.num, new_inode);
+                write_inode(new_inode.num, &new_inode);
 
                 // update the parent
                 parent_inode.nlinks++;
                 parent_inode.mtim = time(NULL);
 
-                return write_inode(parent_inode_num, parent_inode);
+                return write_inode(parent_inode_num, &parent_inode);
             }
         }
     }
@@ -964,7 +972,7 @@ static int wfs_unlink(const char *path) {
         free_inode(inode_num);
     } else {
         // Otherwise, just update the inode
-        write_inode(inode_num, inode);
+        write_inode(inode_num, &inode);
     }
 
     // Step 6: Remove the directory entry if this file is in a directory
@@ -1055,7 +1063,7 @@ static int wfs_rmdir(const char *path) {
 
     // Step 9: Update the parent inode (decrease the link count)
     parent_inode.nlinks--;
-    write_inode(parent_inode_num, parent_inode);
+    write_inode(parent_inode_num, &parent_inode);
 
     return 0;  // Success
 }
@@ -1136,27 +1144,29 @@ static int wfs_read(const char* path, char *buf, size_t size, off_t offset, stru
 static int wfs_write(const char* path, const char *buf, size_t size, off_t offset, struct fuse_file_info* fi) {
     printf("wfs_write called with path: %s\n", path);
 
-    // Step 1: Resolve path and get inode number
+    // resolve path and get inode number
     int inode_num = resolve_path(path);
+
+    // couldn't resolve path
     if (inode_num < 0) {
-        return -ENOENT;  // File does not exist
+        return -ENOENT;  // File still not found
     }
 
-    // Step 2: Read the inode for the file
+    // read the inode for the file
     struct wfs_inode inode;
     if (read_inode(inode_num, &inode) < 0) {
         return -EINVAL;  // Invalid inode
     }
 
-    // Step 3: Validate the inode type (regular file)
+    // validate the inode type (regular file)
     if (!S_ISREG(inode.mode)) {
         return -EINVAL;  // Invalid inode type
     }
 
-    // Step 4: Update file size if necessary
-    if (offset + size > inode.size) {
+    // update file size if necessary
+    if (size > inode.size) {
         inode.size = offset + size;
-        write_inode(inode_num, inode);  // Save the updated inode
+        write_inode(inode.num, &inode);  // Save the updated inode
     }
 
     // Step 5: Read the bitmap for data block allocation
@@ -1168,58 +1178,33 @@ static int wfs_write(const char* path, const char *buf, size_t size, off_t offse
     size_t bytes_written = 0;
     while (bytes_written < size) {
         // Calculate the block index and block offset
-        int block_index = (offset + bytes_written) / BLOCK_SIZE;
-        int block_offset = (offset + bytes_written) % BLOCK_SIZE;
-
-        // Step 7: Check if the block has been allocated (bitmap check)
-        if (block_index == 0) {
-            // Special case for the first data block (block 0)
-            if (!(bitmap[0] & (1 << 0))) {  // Check if the first bit (block 0) is not allocated
-                // Block 0 is unallocated, so we need to allocate it
-                inode.blocks[block_index] = allocate_data_block();
-                if (inode.blocks[block_index] < 0) {
-                    return -ENOSPC;  // No space left to allocate a block
-                }
-                // Mark the block as allocated in the bitmap
-                bitmap[0] |= (1 << 0);  // Set the bit for block 0
-                write_metadata(superblock.d_bitmap_ptr, bitmap, bitmap_size);  // Write the updated bitmap
-            }
-        } else {
-            // For other blocks, check the bitmap and allocate if necessary
-            if (!(bitmap[block_index / 8] & (1 << (block_index % 8)))) {
-                // Block is not allocated, so we need to allocate it
-                inode.blocks[block_index] = allocate_data_block();
-                if (inode.blocks[block_index] < 0) {
-                    return -ENOSPC;  // No space left to allocate a block
-                }
-                // Mark the block as allocated in the bitmap
-                bitmap[block_index / 8] |= (1 << (block_index % 8));  // Set the bit for this block
-                write_metadata(superblock.d_bitmap_ptr, bitmap, bitmap_size);  // Write the updated bitmap
-            }
-        }
-
-        // Step 8: Read the data block into a buffer
+        int block_index = (bytes_written) / BLOCK_SIZE;
+        int block_offset = (bytes_written) % BLOCK_SIZE;
         char data_block[BLOCK_SIZE] = {0};
-        if (read_data_block(inode.blocks[block_index], data_block) < 0) {
-            return -EINVAL;  // Invalid data block
+        
+        // block is not allocated, need to allocate it
+        // auto increments bitmap
+        inode.blocks[block_index] = allocate_data_block();
+        if (inode.blocks[block_index] < 0) {
+            return -ENOSPC;  // No space left to allocate a block
         }
 
-        // Step 9: Write data to the buffer
-        size_t chunk_size = (size - bytes_written) < (BLOCK_SIZE - block_offset) ? (size - bytes_written) : (BLOCK_SIZE - block_offset);
+        // write data to the buffer
+        size_t chunk_size = (size - bytes_written < BLOCK_SIZE) ? (size - bytes_written) : (BLOCK_SIZE);
         memcpy(data_block + block_offset, buf + bytes_written, chunk_size);
 
-        // Step 10: Write the modified data block back to disk
+        // write the modified data block back to disk
         if (write_data_block(inode.blocks[block_index], data_block) < 0) {
-            return -EINVAL;  // Failed to write data block
+            return -EINVAL;  // failed to write data block
         }
 
         // Step 11: Update the number of bytes written
-        bytes_written += chunk_size;
+        bytes_written += BLOCK_SIZE;
     }
 
     // Step 12: Update the inode's modification time and write it back
     inode.mtim = time(NULL);
-    write_inode(inode_num, inode);
+    write_inode(inode_num, &inode);
 
     return size;  // Return the number of bytes written
 }
@@ -1233,6 +1218,7 @@ static int wfs_write(const char* path, const char *buf, size_t size, off_t offse
  */
 static int wfs_readdir(const char* path, void* buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info* fi) {
     printf("wfs_readdir called with path: %s\n", path);
+    return -EINVAL;
 
     // Step 1: Resolve the path to get the inode number
     int inode_num = resolve_path(path);
